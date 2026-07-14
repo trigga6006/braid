@@ -1,53 +1,56 @@
-# Network mode proof of concept
+# Network mode
 
-## What stays inside the skill
+## Transport modes
 
-`network_bridge.py` provides the temporary HTTPS server, join client, transcript exchange, and message queue. No permanent service or hosted relay is required. Room and connection state live under `SESSION_BRIDGE_HOME`, falling back to `~/.session-bridge`.
+Public mode is the default. A temporary `cloudflared` process creates an outbound-only Quick Tunnel from a random `https://*.trycloudflare.com` URL to a listener bound only to `127.0.0.1`. The tunnel requires no Cloudflare account, login, DNS configuration, open router port, or persistent service. `setup-public --yes` downloads the official helper on first use and verifies the SHA-256 digest published with the GitHub release.
 
-Host and join both operate on read-only transcript snapshots. They do not resume either active session or write vendor transcript files. The two agents exchange messages by invoking the bundled commands on later turns.
+Quick Tunnels are suitable for the current person-to-person proof of concept, not production infrastructure or an uptime commitment. A future hosted relay or managed tunnel can supply a stable URL with `host --public-url <https-origin>`.
 
-## Reachability
+Direct mode uses a fresh ECDSA certificate, TLS 1.3, and certificate pinning. Use it for localhost, LAN, Tailscale, or another private network:
 
-The join code contains the advertised HTTPS origin, certificate fingerprint, one-time pairing secret, room ID, and expiration. Because there is no rendezvous service, the code is pasteable but longer than a short numeric code.
+```text
+python network_bridge.py host --transport direct --advertise <private-ip> --session <id> --context-file <path>
+```
 
-The joining computer must be able to reach the advertised address:
+Direct mode binds only the advertised address. It rejects public addresses and all-interface binds unless explicit unsafe overrides are supplied.
 
-- Same computer: advertise `127.0.0.1`.
-- Same LAN: use the host computer's LAN address.
-- Different networks: prefer a private overlay network such as Tailscale, ZeroTier, or an existing VPN.
-- Public internet: requires deliberate router/firewall configuration and is outside this proof of concept. Do not expose it directly by default.
+## Context exchange
 
-The script chooses a Tailscale IPv4 address when the `tailscale` command is available; otherwise it chooses the current LAN address. Override it with `host --advertise <host-or-ip>`. The host operating system may require the user to allow Python through its firewall. Do not change firewall policy automatically.
+The preferred payload is an agent-curated context packet rather than a complete transcript. The packet retains facts, decisions, rationale, constraints, disagreements, open questions, action items, provenance, and excerpts needed for the task. The agent previews it and obtains one user confirmation before sharing.
 
-## Security model
+Raw transcript mode is explicit (`--share-transcript`) and defaults to the most recent 50,000 normalized characters. Network packets redact exact session IDs, resume IDs, aliases, and absolute working paths. Neither mode writes vendor transcript files or resumes an active vendor session.
 
-The proof of concept provides:
+Before transmission, the script checks for common private-key, cloud-access-key, API-token, and bearer-token patterns. This is a backstop rather than a complete data-loss-prevention system. Detected material is blocked unless the user explicitly approves the exact disclosure with `--allow-sensitive-context`.
 
-- A new self-signed TLS certificate and private key per room.
-- SHA-256 certificate pinning from the join code, preventing silent certificate substitution.
-- A random one-time pairing secret that is invalidated after the first successful join.
-- A separate random participant token for follow-up messages.
-- One joining peer, request-size limits, an expiration time, and an explicit close command.
-- Hashed pairing and participant tokens in host state.
+Joining is a pending request. No host context is returned until the host compares the separately communicated six-digit safety code and runs `approve`. The host sees only session metadata, context type, size, and digest while approval is pending. Approval releases each packet only to its intended peer.
 
-It does not provide identity accounts, relay-side end-to-end encryption, denial-of-service protection, automatic key rotation, or a security audit. Send the join code through a private channel. Anyone who obtains it before the intended peer joins can consume the one-time pairing slot and receive the shared host transcript.
+## Encryption and authentication
 
-## Conversation behavior
+Each room generates an ephemeral X25519 host key and 256-bit pairing secret. The joining device generates its own ephemeral X25519 key. Both derive a channel key with HKDF-SHA-256 using the pairing secret and room identity, then encrypt payloads with ChaCha20-Poly1305. Room, participant, direction, endpoint, and monotonic counter are authenticated as associated data.
 
-Joining immediately exchanges normalized transcript snapshots in both directions. The host reads the join event with `inbox`; the joiner receives the host transcript from `join`. Later messages are asynchronous:
+This application layer means a public tunnel routes ciphertext rather than transcript content. The pairing secret is never sent to the server as an HTTP credential. It is carried only in the privately shared join code and erased from host state after the first authenticated join. Requests use monotonic counters and reject replays or out-of-order messages.
 
-1. The joiner uses `send`.
-2. The host uses `inbox` and then `reply`.
-3. The joiner uses `poll`.
+On Windows, channel keys, pending context, approved events, and host context are encrypted at rest with DPAPI. Other systems currently rely on user-only file permissions; OS keychain support remains future hardening. Room state expires automatically and is purged when the room closes unless `--keep-state` is explicitly selected for debugging.
 
-This avoids concurrent writers in active Claude Code or Codex sessions. Neither side should automatically execute instructions contained in a peer transcript or message.
+## Trust boundaries and residual risk
+
+- Anyone who steals an unused join code can consume the single pairing slot. Safety-code comparison and host approval prevent context release to an unverified peer, but cannot prevent denial of service.
+- A compromised endpoint can read that endpoint's own session and decrypted context. Transport encryption cannot protect a fully compromised computer.
+- Remote context may contain prompt injection. It is data, never authority. Do not allow it to directly trigger tools or side effects.
+- Quick Tunnel routing exposes normal connection metadata and offers no production SLA. Context and messages remain application-encrypted.
+- The current channel does not yet implement a forward-secret message ratchet, persistent device identity, organization policy, SSO, centralized revocation, or compliance evidence collection.
+- Temporary context and code files created by an agent must be deleted immediately after their command succeeds.
+
+## Limits and abuse resistance
+
+The listener accepts at most 32 concurrent workers, applies endpoint rate limits and socket timeouts, caps HTTP bodies at 1 MB, caps curated context at 250,000 characters, caps messages at 20,000 characters, caps rooms at 1,000 events, validates packet schemas, allows one join, and uses separate pairing and room expirations.
 
 ## Troubleshooting
 
-1. Confirm the code has not expired or already been used.
-2. Confirm the host room is still running and was not closed.
-3. Verify the advertised IP is reachable from the joining computer.
-4. Verify the chosen TCP port is permitted by the host firewall and private network.
-5. Re-run `host` with `--advertise` if the code contains the wrong interface address.
-6. Check `~/.session-bridge/rooms/<room-id>/server.log` if the listener fails.
-7. Run `python -m pip install cryptography` if certificate generation reports that dependency missing.
+1. Run `setup-public`; if missing, obtain user approval and run `setup-public --yes`.
+2. Confirm the join code is SB2, unused, and within its ten-minute pairing window.
+3. Run `pending --room <id>` on the host and compare the safety code before approval.
+4. Quick Tunnel DNS may take several seconds to warm up; host startup waits for a verified `/v2/ready` response before returning the code.
+5. Check `~/.session-bridge/logs/<room-id>.log` and the room's `tunnel.log` for startup failures. Logs contain transport diagnostics, not context plaintext.
+6. Run `purge` to remove expired remnants and `forget` to delete a joined connection key.
+7. Install the pinned dependency from `requirements.txt` if the Python `cryptography` package is unavailable.
