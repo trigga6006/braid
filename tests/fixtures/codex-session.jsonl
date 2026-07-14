@@ -1,0 +1,4 @@
+{"type":"session_meta","payload":{"id":"11111111-1111-1111-1111-111111111111","cwd":"C:/work/example"}}
+{"type":"response_item","timestamp":"2026-07-14T10:00:00Z","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Compare the operating agreements."}]}}
+{"type":"response_item","timestamp":"2026-07-14T10:00:01Z","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"The voting thresholds differ."}]}}
+{"type":"response_item","payload":{"type":"tool_call","role":"assistant","content":[{"type":"output_text","text":"Do not export tool calls."}]}}

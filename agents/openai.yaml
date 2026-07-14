@@ -1,4 +1,4 @@
 interface:
   display_name: "Session Bridge"
-  short_description: "Securely connect Claude and Codex sessions"
-  default_prompt: "Use $session-bridge to securely exchange detailed context between existing sessions locally or through a public host/join code."
+  short_description: "Bridge Claude and Codex with encrypted context"
+  default_prompt: "Use $session-bridge to securely exchange purpose-focused context between existing Claude Code and Codex sessions."

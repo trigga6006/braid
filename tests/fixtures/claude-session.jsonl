@@ -1,0 +1,4 @@
+{"type":"user","sessionId":"22222222-2222-2222-2222-222222222222","cwd":"/work/example","timestamp":"2026-07-14T10:00:00Z","message":{"role":"user","content":[{"type":"text","text":"Summarize the tax discussion."}]}}
+{"type":"assistant","sessionId":"22222222-2222-2222-2222-222222222222","timestamp":"2026-07-14T10:00:01Z","message":{"role":"assistant","content":[{"type":"text","text":"The discussion favored partnership taxation."}]}}
+{"type":"assistant","isSidechain":true,"message":{"role":"assistant","content":[{"type":"text","text":"Do not export sidechains."}]}}
+{"type":"user","toolUseResult":{"ok":true},"message":{"role":"user","content":[{"type":"text","text":"Do not export tool results."}]}}

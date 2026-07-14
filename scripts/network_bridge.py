@@ -40,13 +40,32 @@ import session_bridge as local
 
 CODE_PREFIX = "SB2."
 REQUIRED_CRYPTOGRAPHY = "48.0.1"
+CLOUDFLARED_RELEASE = "2026.7.1"
+CLOUDFLARED_ASSETS = {
+    "cloudflared-darwin-amd64.tgz": "05871d772745b0f8398c7be89113a0b178474936ff20638b3b07c0e7262f717e",
+    "cloudflared-darwin-arm64.tgz": "6d4b59383cdad387834d7ae5704fc512882b2d078074bf5770e02b186a0981ed",
+    "cloudflared-linux-amd64": "79a0ade7fc854f62c1aaef48424d9d979e8c2fcd039189d24db82b84cd146be1",
+    "cloudflared-linux-arm64": "18f2c9bfc7a67a971bd96f1a5a1935def3c1e52aa386626f1566f04e9b5478d6",
+    "cloudflared-windows-amd64.exe": "ccb0756de288d3c2c076d19764ca53e0849a10f2dd9c23f8656ac42bdeb45001",
+}
 MAX_BODY = 1_000_000
 MAX_CONTEXT_CHARS = 250_000
 MAX_MESSAGE_CHARS = 20_000
 MAX_EVENTS = 1_000
 STATE_LOCK = threading.RLock()
 RATE_LOCK = threading.Lock()
+KEYCHAIN_LOCK = threading.Lock()
 RATE_BUCKETS: dict[str, deque[float]] = defaultdict(deque)
+_LOCAL_MASTER_KEY: bytes | None = None
+_LOCAL_KEY_BACKEND = ""
+DETAIL_SECTIONS = {
+    "brief": ("executive summary", "key facts", "open questions"),
+    "balanced": ("executive summary", "confirmed facts", "decisions", "open questions", "action items"),
+    "deep": (
+        "executive summary", "confirmed facts", "decisions", "rationale", "constraints",
+        "rejected options", "conflicts", "open questions", "action items", "relevant excerpts", "redactions",
+    ),
+}
 SENSITIVE_PATTERNS = (
     ("private key", re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")),
     ("AWS access key", re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b")),
@@ -118,11 +137,26 @@ def b64d(value: str, maximum: int = MAX_BODY) -> bytes:
 def save_json(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     protect_path(path.parent)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    protect_path(temporary)
-    os.replace(temporary, path)
-    protect_path(path)
+    temporary = path.with_name(
+        f"{path.name}.tmp-{os.getpid()}-{threading.get_ident()}-{secrets.token_hex(4)}"
+    )
+    try:
+        temporary.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        protect_path(temporary)
+        for attempt in range(50):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError:
+                if os.name != "nt" or attempt == 49:
+                    raise
+                time.sleep(.01)
+        protect_path(path)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -154,22 +188,126 @@ def _dpapi(data: bytes, protect: bool) -> bytes:
         ctypes.windll.kernel32.LocalFree(result.pbData)
 
 
+def keychain_backend() -> str:
+    if os.environ.get("SESSION_BRIDGE_DISABLE_KEYCHAIN") == "1":
+        return ""
+    if platform.system() == "Darwin" and shutil.which("security"):
+        return "macos-keychain"
+    if platform.system() == "Linux" and shutil.which("secret-tool"):
+        return "linux-secret-service"
+    return ""
+
+
+def keychain_master_key(create: bool) -> tuple[str, bytes | None]:
+    global _LOCAL_KEY_BACKEND, _LOCAL_MASTER_KEY
+    backend = keychain_backend()
+    if not backend:
+        return "", None
+    with KEYCHAIN_LOCK:
+        if _LOCAL_MASTER_KEY is not None and _LOCAL_KEY_BACKEND == backend:
+            return backend, _LOCAL_MASTER_KEY
+        account = getpass.getuser() or "session-bridge-user"
+        try:
+            if backend == "macos-keychain":
+                lookup = subprocess.run(
+                    ["security", "find-generic-password", "-a", account, "-s", "Session Bridge local key", "-w"],
+                    capture_output=True, text=True, timeout=10, check=False,
+                )
+            else:
+                lookup = subprocess.run(
+                    ["secret-tool", "lookup", "application", "session-bridge", "key", "local-master-v1"],
+                    capture_output=True, text=True, timeout=10, check=False,
+                )
+        except (OSError, subprocess.TimeoutExpired):
+            return "", None
+        if lookup.returncode == 0 and lookup.stdout.strip():
+            try:
+                key = b64d(lookup.stdout.strip(), 64)
+            except ValueError:
+                key = b""
+            if len(key) == 32:
+                _LOCAL_KEY_BACKEND, _LOCAL_MASTER_KEY = backend, key
+                return backend, key
+        if not create:
+            return backend, None
+        key = secrets.token_bytes(32)
+        encoded = b64e(key)
+        try:
+            if backend == "macos-keychain":
+                stored = subprocess.run(
+                    [
+                        "security", "add-generic-password", "-U", "-a", account,
+                        "-s", "Session Bridge local key", "-w", encoded,
+                    ],
+                    capture_output=True, text=True, timeout=10, check=False,
+                )
+            else:
+                stored = subprocess.run(
+                    [
+                        "secret-tool", "store", "--label=Session Bridge local key",
+                        "application", "session-bridge", "key", "local-master-v1",
+                    ],
+                    input=encoded + "\n", capture_output=True, text=True, timeout=10, check=False,
+                )
+        except (OSError, subprocess.TimeoutExpired):
+            return "", None
+        if stored.returncode != 0:
+            return "", None
+        _LOCAL_KEY_BACKEND, _LOCAL_MASTER_KEY = backend, key
+        return backend, key
+
+
+def at_rest_backend() -> str:
+    if os.name == "nt":
+        return "windows-dpapi"
+    backend, key = keychain_master_key(False)
+    return backend if key is not None else "user-file-permissions"
+
+
+def seal_keychain_secret(data: bytes, backend: str, key: bytes) -> dict[str, str]:
+    if backend not in ("macos-keychain", "linux-secret-service") or len(key) != 32:
+        raise ValueError("Invalid local keychain encryption parameters.")
+    _, _, _, _, _, ChaCha20Poly1305, _, _ = crypto_imports()
+    nonce = secrets.token_bytes(12)
+    ciphertext = ChaCha20Poly1305(key).encrypt(nonce, data, b"session-bridge/local-secret/v1")
+    return {"scheme": backend + "-chacha20poly1305", "nonce": b64e(nonce), "data": b64e(ciphertext)}
+
+
+def open_keychain_secret(value: dict[str, Any], backend: str, key: bytes) -> bytes:
+    try:
+        from cryptography.exceptions import InvalidTag
+        nonce = b64d(str(value["nonce"]), 32)
+        ciphertext = b64d(str(value["data"]), 4096)
+        _, _, _, _, _, ChaCha20Poly1305, _, _ = crypto_imports()
+        return ChaCha20Poly1305(key).decrypt(nonce, ciphertext, b"session-bridge/local-secret/v1")
+    except (KeyError, ValueError, InvalidTag) as error:
+        raise SystemExit("Keychain-protected Session Bridge state is invalid.") from error
+
+
 def protect_secret(data: bytes) -> dict[str, str]:
     if os.name == "nt":
         return {"scheme": "windows-dpapi", "data": b64e(_dpapi(data, True))}
+    backend, key = keychain_master_key(True)
+    if key is not None:
+        return seal_keychain_secret(data, backend, key)
     return {"scheme": "user-file", "data": b64e(data)}
 
 
 def unprotect_secret(value: dict[str, Any]) -> bytes:
     if not isinstance(value, dict) or not isinstance(value.get("data"), str):
         raise SystemExit("Protected Session Bridge secret is invalid.")
-    raw = b64d(value["data"], 4096)
     if value.get("scheme") == "windows-dpapi":
+        raw = b64d(value["data"], 4096)
         if os.name != "nt":
             raise SystemExit("This connection secret is protected for a different operating system.")
         return _dpapi(raw, False)
+    if value.get("scheme") in ("macos-keychain-chacha20poly1305", "linux-secret-service-chacha20poly1305"):
+        backend, key = keychain_master_key(False)
+        if key is None or not str(value["scheme"]).startswith(backend):
+            raise SystemExit("The operating-system keychain could not unlock Session Bridge state.")
+        return open_keychain_secret(value, backend, key)
     if value.get("scheme") == "user-file":
-        return raw
+        return b64d(value["data"], 4096)
     raise SystemExit("Unknown Session Bridge secret-protection scheme.")
 
 
@@ -259,12 +397,12 @@ def crypto_imports() -> tuple[Any, ...]:
     except ImportError as error:
         raise SystemExit(
             "Network mode needs its pinned cryptography dependency. "
-            "Run setup-public and approve the one-time setup."
+            "Run setup --role join or setup --role host, then approve the one-time setup if needed."
         ) from error
     if str(cryptography.__version__) != REQUIRED_CRYPTOGRAPHY:
         raise SystemExit(
             f"Session Bridge requires cryptography {REQUIRED_CRYPTOGRAPHY}; found "
-            f"{cryptography.__version__}. Run setup-public --yes to install the patched private copy."
+            f"{cryptography.__version__}. Run role-aware setup --yes to install the patched private copy."
         )
     return x509, hashes, serialization, ec, x25519, ChaCha20Poly1305, HKDF, NameOID
 
@@ -278,7 +416,7 @@ def ensure_cryptography(confirmed: bool) -> str:
             found = vendor_version or system_version or "not installed"
             raise SystemExit(
                 f"Session Bridge needs patched cryptography {REQUIRED_CRYPTOGRAPHY} (found {found}). "
-                "Re-run setup-public --yes after the user approves the one-time setup."
+                "Re-run role-aware setup --yes after the user approves the one-time setup."
             )
         vendor = bridge_home() / "vendor"
         vendor.mkdir(exist_ok=True)
@@ -383,13 +521,24 @@ def make_certificate(directory: Path, hostname: str, expires_at: int) -> str:
     return certificate.fingerprint(hashes.SHA256()).hex()
 
 
-def transcript_context(session: local.Session, max_chars: int) -> dict[str, Any]:
+def normalized_purpose(purpose: str) -> str:
+    value = purpose.strip() or "General context exchange"
+    if len(value) > 500:
+        raise SystemExit("Context purpose must be 500 characters or fewer.")
+    return value
+
+
+def transcript_context(
+    session: local.Session, max_chars: int, purpose: str = "", detail: str = "deep"
+) -> dict[str, Any]:
     transcript = local.transcript_payload(session, max_chars)
     transcript["session"] = shareable_transcript_session(session)
     rendered = local.render_markdown(transcript)
     return {
         "format": "session-bridge-context/v1",
         "kind": "transcript",
+        "purpose": normalized_purpose(purpose),
+        "detail": detail,
         "session": shareable_session(session),
         "created_at": local.iso_time(time.time()),
         "characters": len(rendered),
@@ -398,13 +547,17 @@ def transcript_context(session: local.Session, max_chars: int) -> dict[str, Any]
     }
 
 
-def curated_context(session: local.Session, path: Path) -> dict[str, Any]:
+def curated_context(
+    session: local.Session, path: Path, purpose: str = "", detail: str = "balanced"
+) -> dict[str, Any]:
     content = path.read_text(encoding="utf-8")
     if not content.strip() or len(content) > MAX_CONTEXT_CHARS:
         raise SystemExit(f"Curated context must contain 1-{MAX_CONTEXT_CHARS} characters.")
     return {
         "format": "session-bridge-context/v1",
         "kind": "curated",
+        "purpose": normalized_purpose(purpose),
+        "detail": detail,
         "session": shareable_session(session),
         "created_at": local.iso_time(time.time()),
         "characters": len(content),
@@ -419,10 +572,17 @@ def build_context(
     share_transcript: bool,
     max_chars: int,
     allow_sensitive: bool,
+    purpose: str = "",
+    detail: str = "balanced",
 ) -> dict[str, Any]:
     if bool(context_file) == bool(share_transcript):
         raise SystemExit("Choose exactly one context source: --context-file (recommended) or --share-transcript.")
-    context = curated_context(session, Path(context_file).expanduser()) if context_file else transcript_context(session, max_chars)
+    if detail not in DETAIL_SECTIONS:
+        raise SystemExit("Context detail must be brief, balanced, or deep.")
+    context = (
+        curated_context(session, Path(context_file).expanduser(), purpose, detail)
+        if context_file else transcript_context(session, max_chars, purpose, detail)
+    )
     validate_context(context)
     text = context["content"] if context["kind"] == "curated" else local.render_markdown(context["transcript"])
     findings = [label for label, pattern in SENSITIVE_PATTERNS if pattern.search(text)]
@@ -439,6 +599,11 @@ def validate_context(context: dict[str, Any]) -> None:
         raise ValueError("Unsupported context packet.")
     if not isinstance(context.get("session"), dict):
         raise ValueError("Context packet lacks session metadata.")
+    purpose = context.get("purpose", "General context exchange")
+    if not isinstance(purpose, str) or not purpose.strip() or len(purpose) > 500:
+        raise ValueError("Context packet purpose is invalid.")
+    if context.get("detail", "balanced") not in DETAIL_SECTIONS:
+        raise ValueError("Context packet detail level is invalid.")
     characters = int(context.get("characters", -1))
     if characters < 1 or characters > MAX_CONTEXT_CHARS:
         raise ValueError("Context packet exceeds the safety limit.")
@@ -462,8 +627,29 @@ def validate_context(context: dict[str, Any]) -> None:
 def context_metadata(context: dict[str, Any]) -> dict[str, Any]:
     return {
         "kind": context["kind"], "characters": context["characters"], "sha256": context["sha256"],
+        "purpose": context.get("purpose", "General context exchange"),
+        "detail": context.get("detail", "balanced"),
         "session": context["session"], "created_at": context["created_at"],
     }
+
+
+def context_headings(content: str) -> set[str]:
+    headings: set[str] = set()
+    for match in re.finditer(r"^#{1,6}\s+(.+?)\s*$", content, re.MULTILINE):
+        normalized = re.sub(r"[^a-z0-9]+", " ", match.group(1).casefold()).strip()
+        headings.add(normalized)
+    return headings
+
+
+def context_review(context: dict[str, Any]) -> dict[str, Any]:
+    content = context.get("content", "") if context.get("kind") == "curated" else ""
+    headings = context_headings(content) if isinstance(content, str) else set()
+    recommended = DETAIL_SECTIONS[str(context.get("detail", "balanced"))]
+    missing = [section for section in recommended if not any(section in heading for heading in headings)]
+    preview = content[:1600] if isinstance(content, str) else "Transcript sharing was explicitly selected."
+    if isinstance(content, str) and len(content) > len(preview):
+        preview += "\n\n[Preview truncated; digest and character count cover the complete packet.]"
+    return {**context_metadata(context), "headings": sorted(headings), "recommended_missing": missing, "preview": preview}
 
 
 def shareable_session(session: local.Session) -> dict[str, Any]:
@@ -603,11 +789,11 @@ def private_host(host: str) -> bool:
 
 def find_cloudflared() -> str:
     configured = os.environ.get("SESSION_BRIDGE_CLOUDFLARED", "").strip()
-    candidates = [
-        configured,
-        str(bridge_home() / "bin" / ("cloudflared.exe" if os.name == "nt" else "cloudflared")),
-        shutil.which("cloudflared") or "",
-    ]
+    private = bridge_home() / "bin" / ("cloudflared.exe" if os.name == "nt" else "cloudflared")
+    candidates = [configured]
+    if verified_private_cloudflared(private):
+        candidates.append(str(private))
+    candidates.append(shutil.which("cloudflared") or "")
     for candidate in candidates:
         if candidate and Path(candidate).is_file():
             return candidate
@@ -627,36 +813,53 @@ def cloudflared_asset_name() -> str:
     raise SystemExit(f"Automatic tunnel-helper setup does not support {platform.system()}. Install cloudflared manually.")
 
 
-def download_json(url: str) -> dict[str, Any]:
-    request = Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "Session-Bridge"})
-    with urlopen(request, timeout=30) as response:
-        if int(response.headers.get("Content-Length", "0") or 0) > 2_000_000:
-            raise SystemExit("Tunnel-helper release metadata exceeded the safety limit.")
-        value = json.loads(response.read(2_000_001))
-    if not isinstance(value, dict):
-        raise SystemExit("Tunnel-helper release metadata was invalid.")
-    return value
+def cloudflared_download_spec() -> tuple[str, str, str]:
+    asset_name = cloudflared_asset_name()
+    expected = CLOUDFLARED_ASSETS.get(asset_name, "")
+    if not expected or not re.fullmatch(r"[0-9a-f]{64}", expected):
+        raise SystemExit(f"No valid pinned digest is available for {asset_name}.")
+    download_url = (
+        f"https://github.com/cloudflare/cloudflared/releases/download/"
+        f"{CLOUDFLARED_RELEASE}/{asset_name}"
+    )
+    return asset_name, download_url, expected
+
+
+def sha256_file(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def verified_private_cloudflared(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        asset_name, _, expected_archive = cloudflared_download_spec()
+        actual_binary = sha256_file(path)
+        if not asset_name.endswith(".tgz") and hmac.compare_digest(actual_binary, expected_archive):
+            return True
+        metadata = load_json(bridge_home() / "tunnel-helper.json")
+        return (
+            metadata.get("release") == CLOUDFLARED_RELEASE
+            and metadata.get("asset") == asset_name
+            and hmac.compare_digest(str(metadata.get("sha256", "")), expected_archive)
+            and hmac.compare_digest(str(metadata.get("executable_sha256", "")), actual_binary)
+        )
+    except (OSError, SystemExit):
+        return False
 
 
 def setup_cloudflared(confirmed: bool) -> dict[str, Any]:
     if not confirmed:
         raise SystemExit(
-            "This downloads the official Cloudflare Tunnel helper into ~/.session-bridge/bin. "
-            "It requires no account or login. Re-run with setup-public --yes after the user approves."
+            "Hosting publicly downloads the pinned Cloudflare Tunnel helper (about 18-52 MB by platform) "
+            "into ~/.session-bridge/bin. "
+            "It requires no account or login. Re-run with setup --role host --yes after the user approves."
         )
-    release = download_json("https://api.github.com/repos/cloudflare/cloudflared/releases/latest")
-    asset_name = cloudflared_asset_name()
-    assets = release.get("assets")
-    if not isinstance(assets, list):
-        raise SystemExit("Cloudflare release metadata did not contain assets.")
-    asset = next((item for item in assets if isinstance(item, dict) and item.get("name") == asset_name), None)
-    if not asset:
-        raise SystemExit(f"Cloudflare release did not contain {asset_name}.")
-    download_url = str(asset.get("browser_download_url", ""))
-    digest = str(asset.get("digest", ""))
-    if not download_url.startswith("https://github.com/cloudflare/cloudflared/releases/") or not digest.startswith("sha256:"):
-        raise SystemExit("Cloudflare release asset lacked a trusted HTTPS URL or SHA-256 digest.")
-    expected = digest.removeprefix("sha256:").casefold()
+    asset_name, download_url, expected = cloudflared_download_spec()
     bin_dir = bridge_home() / "bin"
     bin_dir.mkdir(exist_ok=True)
     protect_path(bin_dir)
@@ -698,7 +901,8 @@ def setup_cloudflared(confirmed: bool) -> dict[str, Any]:
             raise SystemExit("Downloaded tunnel helper failed its version check.")
         result = {
             "installed": True, "path": str(target), "asset": asset_name,
-            "release": str(release.get("tag_name", "")), "sha256": expected,
+            "release": CLOUDFLARED_RELEASE, "sha256": expected,
+            "executable_sha256": sha256_file(target),
             "version_output": completed.stdout.strip() or completed.stderr.strip(),
         }
         save_json(bridge_home() / "tunnel-helper.json", result)
@@ -1071,22 +1275,25 @@ def start_tunnel(state: dict[str, Any], directory: Path) -> subprocess.Popen[Any
         start_new_session=os.name != "nt",
     )
     log.close()
-    deadline = time.time() + 60
-    pattern = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com", re.IGNORECASE)
-    while time.time() < deadline:
-        if process.poll() is not None:
-            detail = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
-            raise SystemExit(f"Cloudflare Quick Tunnel failed to start.\n{detail[-4000:]}")
-        text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
-        if match := pattern.search(text):
-            state = load_json(state_path(directory))
-            state["origin"] = match.group(0)
-            state["tunnel_pid"] = process.pid
-            save_json(state_path(directory), state)
-            return process
-        time.sleep(.2)
-    process.terminate()
-    raise SystemExit("Cloudflare Quick Tunnel did not provide a public URL within 60 seconds.")
+    try:
+        deadline = time.time() + 60
+        pattern = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com", re.IGNORECASE)
+        while time.time() < deadline:
+            if process.poll() is not None:
+                detail = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
+                raise SystemExit(f"Cloudflare Quick Tunnel failed to start.\n{detail[-4000:]}")
+            text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
+            if match := pattern.search(text):
+                state = load_json(state_path(directory))
+                state["origin"] = match.group(0)
+                state["tunnel_pid"] = process.pid
+                save_json(state_path(directory), state)
+                return process
+            time.sleep(.2)
+        raise SystemExit("Cloudflare Quick Tunnel did not provide a public URL within 60 seconds.")
+    except BaseException:
+        stop_tunnel(process)
+        raise
 
 
 def stop_tunnel(process: subprocess.Popen[Any] | None) -> None:
@@ -1112,12 +1319,52 @@ def safe_remove_room(directory: Path) -> bool:
         return False
 
 
+def abort_host_room(directory: Path, process: subprocess.Popen[Any] | None = None) -> None:
+    try:
+        state = load_json(state_path(directory))
+        state["closed"] = True
+        state["purge_on_close"] = True
+        save_json(state_path(directory), state)
+    except SystemExit:
+        pass
+    deadline = time.time() + 3
+    while directory.exists() and time.time() < deadline:
+        if process is not None and process.poll() is not None:
+            break
+        time.sleep(.1)
+    if directory.exists():
+        safe_remove_room(directory)
+
+
+def command_preview(args: argparse.Namespace) -> None:
+    session = local.resolve_session(args.session, args.provider)
+    context = build_context(
+        session, args.context_file, args.share_transcript, args.max_chars,
+        args.allow_sensitive_context, args.purpose, args.detail,
+    )
+    review = context_review(context)
+    print(json.dumps(review, indent=2, ensure_ascii=False) if args.json else (
+        f"Purpose: {review['purpose']}\nDetail: {review['detail']}\n"
+        f"Characters: {review['characters']}\nSHA-256: {review['sha256']}\n"
+        f"Recommended sections missing: {', '.join(review['recommended_missing']) or 'none'}\n\n"
+        f"{review['preview']}"
+    ))
+
+
 def command_host(args: argparse.Namespace) -> None:
     session = local.resolve_session(args.session, args.provider)
     if session.transcript is None:
         raise SystemExit("Hosting requires a local session transcript.")
-    context = build_context(session, args.context_file, args.share_transcript, args.max_chars, args.allow_sensitive_context)
+    context = build_context(
+        session, args.context_file, args.share_transcript, args.max_chars,
+        args.allow_sensitive_context, args.purpose, args.detail,
+    )
     transport = args.transport
+    if transport == "public" and not args.public_url and not find_cloudflared():
+        raise SystemExit(
+            "Public hosting requires the pinned Cloudflare helper. Run setup --role host, "
+            "or provide a managed tunnel with --public-url."
+        )
     room_id = secrets.token_hex(6)
     directory = room_dir(room_id)
     directory.mkdir(parents=True, exist_ok=False)
@@ -1142,11 +1389,6 @@ def command_host(args: argparse.Namespace) -> None:
         if origin and (urlsplit(origin).scheme != "https" or not urlsplit(origin).hostname):
             raise SystemExit("--public-url must be an https:// origin.")
         public_url = origin
-        if not public_url and not find_cloudflared():
-            raise SystemExit(
-                "Public mode requires cloudflared. Install Cloudflare Tunnel, use --transport direct, "
-                "or provide a managed tunnel with --public-url."
-            )
     state = {
         "version": 2, "room_id": room_id, "created_at": local.iso_time(time.time()),
         "transport": transport, "bind": bind, "port": port, "origin": origin,
@@ -1174,6 +1416,7 @@ def command_host(args: argparse.Namespace) -> None:
     while time.time() < deadline:
         if process.poll() is not None:
             detail = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
+            abort_host_room(directory, process)
             raise SystemExit(f"Session Bridge host failed to start.\n{detail[-4000:]}")
         state = load_json(state_path(directory))
         if state.get("origin"):
@@ -1184,15 +1427,13 @@ def command_host(args: argparse.Namespace) -> None:
                 pass
         time.sleep(.15)
     else:
+        abort_host_room(directory, process)
         raise SystemExit(f"Session Bridge host did not start. Check {log_path}")
     if transport == "public":
         try:
             wait_for_public_tunnel(str(state["origin"]))
         except SystemExit:
-            failed_state = load_json(state_path(directory))
-            failed_state["closed"] = True
-            failed_state["purge_on_close"] = True
-            save_json(state_path(directory), failed_state)
+            abort_host_room(directory, process)
             raise
     code = encode_code({
         "v": 2, "url": state["origin"], "room": room_id, "pair": b64e(pair_secret),
@@ -1215,7 +1456,10 @@ def command_host(args: argparse.Namespace) -> None:
 def command_join(args: argparse.Namespace) -> None:
     code = decode_code(read_join_code(args))
     session = local.resolve_session(args.session, args.provider)
-    context = build_context(session, args.context_file, args.share_transcript, args.max_chars, args.allow_sensitive_context)
+    context = build_context(
+        session, args.context_file, args.share_transcript, args.max_chars,
+        args.allow_sensitive_context, args.purpose, args.detail,
+    )
     message = read_message(args, required=False)
     client_private, client_public = generate_exchange_keypair()
     pair_secret = b64d(str(code["pair"]), 64)
@@ -1257,6 +1501,15 @@ def command_join(args: argparse.Namespace) -> None:
     ))
 
 
+def command_start(args: argparse.Namespace) -> None:
+    if args.role == "host":
+        command_host(args)
+    else:
+        if not (args.code or args.code_file or args.code_stdin):
+            raise SystemExit("Joining requires a code source: --code-file, --code-stdin, or --code.")
+        command_join(args)
+
+
 def load_connection(identifier: str) -> tuple[Path, dict[str, Any]]:
     path = connection_path(identifier)
     if not path.exists():
@@ -1265,6 +1518,55 @@ def load_connection(identifier: str) -> tuple[Path, dict[str, Any]]:
             raise SystemExit("Connection ID was not found or is ambiguous.")
         path = matches[0]
     return path, load_json(path)
+
+
+def command_status(args: argparse.Namespace) -> None:
+    identifier = safe_id(args.id)
+    directory = bridge_home() / "rooms" / identifier
+    if directory.is_dir() and state_path(directory).exists():
+        state = load_json(state_path(directory))
+        participants = [
+            {
+                "peer_id": peer_id, "status": participant.get("status"),
+                "safety_code": participant.get("safety_code") if participant.get("status") == "pending" else None,
+                "session": participant.get("session"), "context": participant.get("context"),
+            }
+            for peer_id, participant in state.get("participants", {}).items()
+            if isinstance(participant, dict)
+        ]
+        pending = [item for item in participants if item["status"] == "pending"]
+        result = {
+            "kind": "host", "room_id": state["room_id"], "transport": state["transport"],
+            "url": state.get("origin", ""), "closed": bool(state.get("closed")),
+            "expires": local.iso_time(float(state.get("expires", 0))), "participants": participants,
+            "next_action": "compare_safety_code_and_approve" if pending else "read_inbox_or_wait",
+            "at_rest": at_rest_backend(),
+        }
+    else:
+        _, connection = load_connection(identifier)
+        result = {
+            "kind": "join", "connection_id": connection["connection_id"],
+            "room_id": connection["room_id"], "status": connection.get("status"),
+            "safety_code": connection.get("safety_code") if connection.get("status") != "approved" else None,
+            "expires": local.iso_time(float(connection.get("expires", 0))),
+            "next_action": "compare_safety_code_then_poll" if connection.get("status") != "approved" else "poll_or_send",
+            "at_rest": at_rest_backend(),
+        }
+    print(json.dumps(result, indent=2) if args.json else "\n".join(f"{key}: {value}" for key, value in result.items()))
+
+
+def command_finish(args: argparse.Namespace) -> None:
+    identifier = safe_id(args.id)
+    directory = bridge_home() / "rooms" / identifier
+    if directory.is_dir() and state_path(directory).exists():
+        command_close(argparse.Namespace(room=identifier, keep_state=False))
+        deadline = time.time() + 3
+        while directory.exists() and time.time() < deadline:
+            time.sleep(.1)
+        if directory.exists() and not safe_remove_room(directory):
+            raise SystemExit(f"Room {identifier} closed but could not be purged; run purge and inspect local permissions.")
+        return
+    command_forget(argparse.Namespace(connection=identifier))
 
 
 def channel_request(connection: dict[str, Any], endpoint: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
@@ -1461,20 +1763,42 @@ def command_purge(_: argparse.Namespace) -> None:
     print(json.dumps({"rooms_removed": rooms_removed, "connections_removed": connections_removed}, indent=2))
 
 
-def command_setup_public(args: argparse.Namespace) -> None:
+def command_setup(args: argparse.Namespace) -> None:
+    if args.role == "local":
+        print(json.dumps({
+            "ready": True, "role": "local", "downloads": [],
+            "message": "Local transcript bridging uses only the Python standard library.",
+        }, indent=2))
+        return
     cryptography_version = ensure_cryptography(args.yes)
+    if os.name != "nt":
+        keychain_master_key(True)
+    result: dict[str, Any] = {
+        "ready": True, "role": args.role, "cryptography": cryptography_version,
+        "at_rest": at_rest_backend(), "downloads": ["cryptography (~12 MB, once)"]
+    }
+    if args.role == "join":
+        result["message"] = "Join mode does not install or run Cloudflare Tunnel."
+        print(json.dumps(result, indent=2))
+        return
     existing = find_cloudflared()
     if existing and not args.update:
         completed = subprocess.run([existing, "--version"], capture_output=True, text=True, timeout=10, check=False)
-        print(json.dumps({
+        result.update({
             "installed": True, "existing": True, "path": existing,
             "version_output": completed.stdout.strip() or completed.stderr.strip(),
-            "cryptography": cryptography_version,
-        }, indent=2))
+            "downloads": ["cryptography (~12 MB, once)", "cloudflared (existing)"],
+        })
+        print(json.dumps(result, indent=2))
         return
-    result = setup_cloudflared(args.yes)
-    result["cryptography"] = cryptography_version
+    tunnel = setup_cloudflared(args.yes)
+    result.update(tunnel)
+    result["downloads"] = ["cryptography (~12 MB, once)", "cloudflared (~18-52 MB, host only, once)"]
     print(json.dumps(result, indent=2))
+
+
+def command_setup_public(args: argparse.Namespace) -> None:
+    command_setup(argparse.Namespace(role="host", yes=args.yes, update=args.update))
 
 
 def command_serve(args: argparse.Namespace) -> None:
@@ -1522,12 +1846,58 @@ def add_context_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--context-file", help="Agent-curated Markdown context packet (recommended)")
     parser.add_argument("--share-transcript", action="store_true", help="Explicitly share normalized recent transcript text")
     parser.add_argument("--max-chars", type=int, default=50000)
+    parser.add_argument("--purpose", default="General context exchange", help="Focused reason for this context handoff")
+    parser.add_argument("--detail", choices=tuple(DETAIL_SECTIONS), default="balanced")
     parser.add_argument("--allow-sensitive-context", action="store_true", help="User explicitly approved detected credential-like content")
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+
+    setup = commands.add_parser("setup", help="Prepare only the dependencies needed for a local, join, or host role")
+    setup.add_argument("--role", choices=("local", "join", "host"), required=True)
+    setup.add_argument("--yes", action="store_true", help="User approved the disclosed one-time downloads")
+    setup.add_argument("--update", action="store_true", help="Reinstall the pinned host tunnel helper")
+    setup.set_defaults(function=command_setup)
+
+    preview = commands.add_parser("preview", help="Validate and preview a context packet before user approval")
+    preview.add_argument("--session", required=True)
+    preview.add_argument("--provider", choices=("all", "codex", "claude"), default="all")
+    add_context_arguments(preview)
+    preview.add_argument("--json", action="store_true")
+    preview.set_defaults(function=command_preview)
+
+    start = commands.add_parser("start", help="Start a public or direct bridge as host or joiner")
+    start.add_argument("--role", choices=("host", "join"), required=True)
+    start.add_argument("--session", required=True)
+    start.add_argument("--provider", choices=("all", "codex", "claude"), default="all")
+    start.add_argument("--transport", choices=("public", "direct"), default="public")
+    start.add_argument("--public-url", default="")
+    start.add_argument("--advertise", default="")
+    start.add_argument("--bind", default="")
+    start.add_argument("--allow-public-address", action="store_true")
+    start.add_argument("--allow-all-interfaces", action="store_true")
+    start.add_argument("--port", type=int, default=0)
+    start.add_argument("--pairing-minutes", type=int, default=10)
+    start.add_argument("--room-minutes", type=int, default=120)
+    start.add_argument("--code")
+    start.add_argument("--code-file")
+    start.add_argument("--code-stdin", action="store_true")
+    start.add_argument("--timeout", type=float, default=20)
+    add_context_arguments(start)
+    add_message_arguments(start)
+    start.add_argument("--json", action="store_true")
+    start.set_defaults(function=command_start)
+
+    status = commands.add_parser("status", help="Show a room or connection and its next safe action")
+    status.add_argument("--id", required=True)
+    status.add_argument("--json", action="store_true")
+    status.set_defaults(function=command_status)
+
+    finish = commands.add_parser("finish", help="Close and purge a host room or forget a joined connection")
+    finish.add_argument("--id", required=True)
+    finish.set_defaults(function=command_finish)
 
     host = commands.add_parser("host", help="Host a secure one-peer bridge room")
     host.add_argument("--session", required=True)
