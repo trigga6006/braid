@@ -274,6 +274,109 @@ class NetworkBridgeTests(unittest.TestCase):
                     bridge.start_tunnel(state, directory)
             self.assertTrue(process.stopped)
 
+    def test_watch_host_remembers_cursor_and_say_routes_to_peer(self) -> None:
+        bridge.crypto_imports()
+        previous_home = os.environ.get("SESSION_BRIDGE_HOME")
+        with tempfile.TemporaryDirectory() as home:
+            os.environ["SESSION_BRIDGE_HOME"] = home
+            room_id = "collaboration-room"
+            directory = bridge.room_dir(room_id)
+            (directory / "events").mkdir(parents=True)
+            state = {
+                "room_id": room_id, "closed": False, "expires": int(time.time()) + 600,
+                "participants": {"peer-test": {"status": "approved"}}, "next_sequence": 1,
+            }
+            bridge.save_json(bridge.state_path(directory), state)
+            bridge.append_event(directory, state, {
+                "type": "message", "from": "peer-test", "to": "host", "message": "First finding",
+            })
+            try:
+                with redirect_stdout(io.StringIO()) as first_output:
+                    bridge.command_watch(argparse.Namespace(
+                        id=room_id, wait=0, timeout=1, output=None, json=True,
+                    ))
+                first = json.loads(first_output.getvalue())
+                self.assertEqual([event["message"] for event in first["events"]], ["First finding"])
+                self.assertEqual(first["cursor"], 1)
+
+                with redirect_stdout(io.StringIO()) as empty_output:
+                    bridge.command_watch(argparse.Namespace(
+                        id=room_id, wait=0, timeout=1, output=None, json=True,
+                    ))
+                self.assertEqual(json.loads(empty_output.getvalue())["events"], [])
+
+                with redirect_stdout(io.StringIO()):
+                    bridge.command_say(argparse.Namespace(
+                        id=room_id, timeout=1, json=True, message="Host synthesis",
+                        message_file=None, stdin=False,
+                    ))
+                events = bridge.load_events(directory)
+                self.assertEqual(events[-1]["to"], "peer-test")
+                self.assertEqual(events[-1]["message"], "Host synthesis")
+
+                current = bridge.load_json(bridge.state_path(directory))
+                bridge.append_event(directory, current, {
+                    "type": "message", "from": "peer-test", "to": "host", "message": "Second finding",
+                })
+                with redirect_stdout(io.StringIO()) as second_output:
+                    bridge.command_watch(argparse.Namespace(
+                        id=room_id, wait=0, timeout=1, output=None, json=True,
+                    ))
+                second = json.loads(second_output.getvalue())
+                self.assertEqual([event["message"] for event in second["events"]], ["Second finding"])
+                self.assertEqual(second["cursor"], 3)
+            finally:
+                if previous_home is None:
+                    os.environ.pop("SESSION_BRIDGE_HOME", None)
+                else:
+                    os.environ["SESSION_BRIDGE_HOME"] = previous_home
+
+    def test_watch_and_say_route_through_join_connection(self) -> None:
+        previous_home = os.environ.get("SESSION_BRIDGE_HOME")
+        with tempfile.TemporaryDirectory() as home:
+            os.environ["SESSION_BRIDGE_HOME"] = home
+            path = Path(home) / "connections" / "join-connection.json"
+            connection = {
+                "connection_id": "join-connection", "room_id": "room",
+                "peer_id": "peer-test", "status": "approved", "cursor": 0,
+            }
+            try:
+                with (
+                    mock.patch.object(bridge, "load_connection", return_value=(path, connection)),
+                    mock.patch.object(bridge, "channel_request", return_value={"accepted": True}) as request,
+                    redirect_stdout(io.StringIO()),
+                ):
+                    bridge.command_say(argparse.Namespace(
+                        id="join-connection", timeout=1, json=True, message="Joiner finding",
+                        message_file=None, stdin=False,
+                    ))
+                self.assertEqual(request.call_args.args[1:3], ("message", {"message": "Joiner finding"}))
+
+                reply = {
+                    "events": [{
+                        "sequence": 2, "type": "message", "from": "host",
+                        "to": "peer-test", "message": "Host answer",
+                    }],
+                    "cursor": 2, "status": "approved",
+                }
+                with (
+                    mock.patch.object(bridge, "load_connection", return_value=(path, connection)),
+                    mock.patch.object(bridge, "channel_request", return_value=reply),
+                    redirect_stdout(io.StringIO()) as output,
+                ):
+                    bridge.command_watch(argparse.Namespace(
+                        id="join-connection", wait=0, timeout=1, output=None, json=True,
+                    ))
+                watched = json.loads(output.getvalue())
+                self.assertEqual(watched["kind"], "join")
+                self.assertEqual(watched["events"][0]["message"], "Host answer")
+                self.assertEqual(watched["cursor"], 2)
+            finally:
+                if previous_home is None:
+                    os.environ.pop("SESSION_BRIDGE_HOME", None)
+                else:
+                    os.environ["SESSION_BRIDGE_HOME"] = previous_home
+
     def test_complete_pair_approve_exchange_replay_and_close_flow(self) -> None:
         # Load the verified dependency before isolating bridge state in a temporary home.
         bridge.crypto_imports()

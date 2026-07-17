@@ -118,6 +118,10 @@ def pending_path(directory: Path, peer_id: str) -> Path:
     return directory / "pending" / f"{safe_id(peer_id)}.json"
 
 
+def host_cursor_path(directory: Path) -> Path:
+    return directory / "host-cursor.json"
+
+
 def b64e(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
 
@@ -1702,6 +1706,52 @@ def command_inbox(args: argparse.Namespace) -> None:
     write_or_print(text, args.output)
 
 
+def command_watch(args: argparse.Namespace) -> None:
+    """Wait for the next unread event, regardless of whether this side hosts or joins."""
+    identifier = safe_id(args.id)
+    directory = bridge_home() / "rooms" / identifier
+    deadline = time.time() + max(0, min(args.wait, 55))
+    if directory.is_dir() and state_path(directory).exists():
+        cursor_file = host_cursor_path(directory)
+        after = int(load_json(cursor_file).get("cursor", 0)) if cursor_file.exists() else 0
+        events: list[dict[str, Any]] = []
+        while True:
+            state = load_json(state_path(directory))
+            if state.get("closed") or int(state.get("expires", 0)) < int(time.time()):
+                raise SystemExit("This Session Bridge room is closed or expired.")
+            events = [event for event in load_events(directory, after) if event.get("to") == "host"]
+            if events or time.time() >= deadline:
+                break
+            time.sleep(min(1, max(.1, deadline - time.time())))
+        cursor = max([after, *[int(event["sequence"]) for event in events]])
+        save_json(cursor_file, {"cursor": cursor})
+        result = {
+            "kind": "host", "id": identifier, "events": events, "cursor": cursor,
+            "timed_out": not events,
+        }
+    else:
+        path, connection = load_connection(identifier)
+        response: dict[str, Any]
+        while True:
+            response = channel_request(connection, "poll", {"after": int(connection.get("cursor", 0))}, args.timeout)
+            save_json(path, connection)
+            if response.get("events") or time.time() >= deadline:
+                break
+            time.sleep(min(1, max(.1, deadline - time.time())))
+        connection["cursor"] = max(int(connection.get("cursor", 0)), int(response.get("cursor", 0)))
+        connection["status"] = response.get("status", connection.get("status"))
+        save_json(path, connection)
+        result = {
+            "kind": "join", "id": connection["connection_id"],
+            "status": connection.get("status"), "events": response.get("events", []),
+            "cursor": connection["cursor"], "timed_out": not response.get("events"),
+        }
+    text = json.dumps(result, indent=2) + "\n" if args.json else render_events(
+        result["events"], "Session Bridge Collaboration"
+    )
+    write_or_print(text, args.output)
+
+
 def command_reply(args: argparse.Namespace) -> None:
     directory = room_dir(args.room)
     with STATE_LOCK:
@@ -1715,6 +1765,29 @@ def command_reply(args: argparse.Namespace) -> None:
             "type": "message", "from": "host", "to": args.peer, "message": read_message(args),
         })
     print(json.dumps(event, indent=2) if args.json else f"Encrypted reply queued as event {event['sequence']}.")
+
+
+def command_say(args: argparse.Namespace) -> None:
+    """Send a message, regardless of whether this side hosts or joins."""
+    identifier = safe_id(args.id)
+    directory = bridge_home() / "rooms" / identifier
+    if directory.is_dir() and state_path(directory).exists():
+        state = load_json(state_path(directory))
+        peers = [
+            peer_id for peer_id, participant in state.get("participants", {}).items()
+            if isinstance(participant, dict) and participant.get("status") == "approved"
+        ]
+        if len(peers) != 1:
+            raise SystemExit("The host needs exactly one approved peer before it can send a collaboration message.")
+        command_reply(argparse.Namespace(
+            room=identifier, peer=peers[0], json=args.json,
+            message=args.message, message_file=args.message_file, stdin=args.stdin,
+        ))
+        return
+    command_send(argparse.Namespace(
+        connection=identifier, timeout=args.timeout, json=args.json,
+        message=args.message, message_file=args.message_file, stdin=args.stdin,
+    ))
 
 
 def command_close(args: argparse.Namespace) -> None:
@@ -1972,6 +2045,21 @@ def build_parser() -> argparse.ArgumentParser:
     reply.add_argument("--json", action="store_true")
     add_message_arguments(reply)
     reply.set_defaults(function=command_reply)
+
+    watch = commands.add_parser("watch", help="Wait for the next unread collaboration event as host or joiner")
+    watch.add_argument("--id", required=True)
+    watch.add_argument("--wait", type=int, default=45, help="Wait up to 55 seconds")
+    watch.add_argument("--timeout", type=float, default=20)
+    watch.add_argument("--output")
+    watch.add_argument("--json", action="store_true")
+    watch.set_defaults(function=command_watch)
+
+    say = commands.add_parser("say", help="Send an encrypted collaboration message as host or joiner")
+    say.add_argument("--id", required=True)
+    say.add_argument("--timeout", type=float, default=20)
+    say.add_argument("--json", action="store_true")
+    add_message_arguments(say)
+    say.set_defaults(function=command_say)
 
     close = commands.add_parser("close", help="Close a room and purge sensitive state")
     close.add_argument("--room", required=True)
