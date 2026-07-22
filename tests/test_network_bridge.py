@@ -6,9 +6,9 @@ from contextlib import redirect_stdout
 import http.client
 import io
 import json
+import multiprocessing
 import os
 from pathlib import Path
-import subprocess
 import sys
 import tempfile
 import threading
@@ -51,6 +51,15 @@ def append_event_in_process(arguments: tuple[str, int]) -> int:
             {"type": "message", "from": f"worker-{index}", "message": str(index)},
         )["sequence"]
     )
+
+
+def serve_room_in_process(home: str, directory_text: str, port_file_text: str) -> None:
+    os.environ["SESSION_BRIDGE_HOME"] = home
+    os.environ["SESSION_BRIDGE_DISABLE_KEYCHAIN"] = "1"
+    server = bridge.BoundedThreadingHTTPServer(("127.0.0.1", 0), bridge.BridgeHandler)
+    server.room_directory = Path(directory_text)
+    Path(port_file_text).write_text(str(server.server_address[1]), encoding="ascii")
+    server.serve_forever()
 
 
 class NetworkBridgeTests(unittest.TestCase):
@@ -909,46 +918,21 @@ class NetworkBridgeTests(unittest.TestCase):
             )
             bridge.save_json(bridge.state_path(directory), state)
             port_file = Path(home) / "server-port.txt"
-            child_code = (
-                "import sys; from pathlib import Path; "
-                "sys.path.insert(0, sys.argv[1]); import network_bridge as b; "
-                "server=b.BoundedThreadingHTTPServer(('127.0.0.1', 0), b.BridgeHandler); "
-                "server.room_directory=Path(sys.argv[2]); "
-                "Path(sys.argv[3]).write_text(str(server.server_address[1]), encoding='ascii'); "
-                "server.serve_forever()"
+            process = multiprocessing.get_context("spawn").Process(
+                target=serve_room_in_process,
+                args=(home, str(directory), str(port_file)),
+                daemon=True,
             )
-            child_environment = os.environ.copy()
-            child_environment["SESSION_BRIDGE_HOME"] = home
-            child_environment["SESSION_BRIDGE_DISABLE_KEYCHAIN"] = "1"
-            crypto_site = str(
-                Path(sys.modules["cryptography"].__file__).resolve().parent.parent
-            )
-            if not Path(crypto_site).is_relative_to(Path(sys.prefix).resolve()):
-                child_environment["PYTHONPATH"] = os.pathsep.join(
-                    filter(None, (crypto_site, child_environment.get("PYTHONPATH", "")))
-                )
-            process = subprocess.Popen(
-                [
-                    sys.executable,
-                    "-u",
-                    "-c",
-                    child_code,
-                    str(SCRIPTS),
-                    str(directory),
-                    str(port_file),
-                ],
-                env=child_environment,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
+            process.start()
             try:
                 deadline = time.monotonic() + 30
                 port = 0
                 while time.monotonic() < deadline:
-                    if process.poll() is not None:
-                        process.communicate(timeout=1)
-                        self.fail("Bridge server process exited during startup.")
+                    if process.exitcode is not None:
+                        self.fail(
+                            "Bridge server process exited during startup with "
+                            f"code {process.exitcode}."
+                        )
                     if not port and port_file.exists():
                         port = int(port_file.read_text(encoding="ascii"))
                     if not port:
@@ -969,11 +953,10 @@ class NetworkBridgeTests(unittest.TestCase):
                         connection.close()
                 else:
                     process.terminate()
-                    _, child_error = process.communicate(timeout=5)
+                    process.join(timeout=5)
                     self.fail(
                         "Bridge server process did not become ready; "
-                        f"port_handoff={port_file.exists()}, port={port}, "
-                        f"stderr={child_error[-2000:]}"
+                        f"port_handoff={port_file.exists()}, port={port}"
                     )
                 client_private, client_public = bridge.generate_exchange_keypair()
                 key = bridge.derive_channel_key(
@@ -1173,13 +1156,12 @@ class NetworkBridgeTests(unittest.TestCase):
                     bridge.command_finish(argparse.Namespace(id=room_id))
                 self.assertFalse(directory.exists())
             finally:
-                if process.poll() is None:
+                if process.is_alive():
                     process.terminate()
-                    try:
-                        process.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
+                    process.join(timeout=5)
+                    if process.is_alive():
                         process.kill()
-                        process.wait(timeout=5)
+                        process.join(timeout=5)
                 bridge.safe_remove_room(directory)
                 if previous_home is None:
                     os.environ.pop("SESSION_BRIDGE_HOME", None)
