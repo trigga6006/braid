@@ -6,7 +6,6 @@ from contextlib import redirect_stdout
 import http.client
 import io
 import json
-import multiprocessing
 import os
 from pathlib import Path
 import sys
@@ -53,13 +52,22 @@ def append_event_in_process(arguments: tuple[str, int]) -> int:
     )
 
 
-def serve_room_in_process(home: str, directory_text: str, port_file_text: str) -> None:
-    os.environ["SESSION_BRIDGE_HOME"] = home
+def open_context_pack_in_process(
+    arguments: tuple[bytes, str, str, int, dict[str, str], str],
+) -> dict[str, str]:
+    key, room_id, peer_id, counter, envelope, recipient = arguments
     os.environ["SESSION_BRIDGE_DISABLE_KEYCHAIN"] = "1"
-    server = bridge.BoundedThreadingHTTPServer(("127.0.0.1", 0), bridge.BridgeHandler)
-    server.room_directory = Path(directory_text)
-    Path(port_file_text).write_text(str(server.server_address[1]), encoding="ascii")
-    server.serve_forever()
+    request = bridge.open_json(
+        key,
+        envelope,
+        bridge.channel_aad(room_id, peer_id, "peer-to-host", "event", counter),
+    )
+    metadata = bridge.validate_disclosure_bundle(request["bundle"], recipient)
+    return bridge.seal_json(
+        key,
+        {"accepted": True, "metadata": metadata},
+        bridge.channel_aad(room_id, peer_id, "host-to-peer", "event", counter),
+    )
 
 
 class NetworkBridgeTests(unittest.TestCase):
@@ -849,7 +857,9 @@ class NetworkBridgeTests(unittest.TestCase):
                         previous_disable_keychain
                     )
 
-    def test_complete_pair_approve_exchange_replay_and_close_flow(self) -> None:
+    def test_complete_pair_approve_cross_process_pack_replay_and_close_flow(
+        self,
+    ) -> None:
         # Load the verified dependency before isolating bridge state in a temporary home.
         bridge.crypto_imports()
         previous_home = os.environ.get("SESSION_BRIDGE_HOME")
@@ -917,27 +927,16 @@ class NetworkBridgeTests(unittest.TestCase):
                 directory / "host-context.json", {"context": host_context}
             )
             bridge.save_json(bridge.state_path(directory), state)
-            port_file = Path(home) / "server-port.txt"
-            process = multiprocessing.get_context("spawn").Process(
-                target=serve_room_in_process,
-                args=(home, str(directory), str(port_file)),
-                daemon=True,
+            server = bridge.BoundedThreadingHTTPServer(
+                ("127.0.0.1", 0), bridge.BridgeHandler
             )
-            process.start()
+            server.room_directory = directory
+            port = int(server.server_address[1])
+            server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+            server_thread.start()
             try:
-                deadline = time.monotonic() + 30
-                port = 0
+                deadline = time.monotonic() + 5
                 while time.monotonic() < deadline:
-                    if process.exitcode is not None:
-                        self.fail(
-                            "Bridge server process exited during startup with "
-                            f"code {process.exitcode}."
-                        )
-                    if not port and port_file.exists():
-                        port = int(port_file.read_text(encoding="ascii"))
-                    if not port:
-                        time.sleep(0.02)
-                        continue
                     connection = http.client.HTTPConnection(
                         "127.0.0.1", port, timeout=1
                     )
@@ -952,12 +951,7 @@ class NetworkBridgeTests(unittest.TestCase):
                     finally:
                         connection.close()
                 else:
-                    process.terminate()
-                    process.join(timeout=5)
-                    self.fail(
-                        "Bridge server process did not become ready; "
-                        f"port_handoff={port_file.exists()}, port={port}"
-                    )
+                    self.fail("Bridge server thread did not become ready.")
                 client_private, client_public = bridge.generate_exchange_keypair()
                 key = bridge.derive_channel_key(
                     client_private, host_public, pair_secret, room_id
@@ -1114,6 +1108,44 @@ class NetworkBridgeTests(unittest.TestCase):
                     host_principal,
                 )
                 signed_bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+                process_counter = 91
+                process_request = bridge.seal_json(
+                    key,
+                    {"bundle": signed_bundle},
+                    bridge.channel_aad(
+                        room_id,
+                        peer_id,
+                        "peer-to-host",
+                        "event",
+                        process_counter,
+                    ),
+                )
+                with ProcessPoolExecutor(max_workers=1) as executor:
+                    process_response = executor.submit(
+                        open_context_pack_in_process,
+                        (
+                            key,
+                            room_id,
+                            peer_id,
+                            process_counter,
+                            process_request,
+                            host_principal,
+                        ),
+                    ).result(timeout=20)
+                process_ack = bridge.open_json(
+                    key,
+                    process_response,
+                    bridge.channel_aad(
+                        room_id,
+                        peer_id,
+                        "host-to-peer",
+                        "event",
+                        process_counter,
+                    ),
+                )
+                self.assertTrue(process_ack["accepted"])
+                self.assertEqual(process_ack["metadata"]["claims"], 1)
+                self.assertEqual(process_ack["metadata"]["recipient"], host_principal)
                 typed_request = {
                     "peer_id": peer_id,
                     "counter": 3,
@@ -1156,12 +1188,9 @@ class NetworkBridgeTests(unittest.TestCase):
                     bridge.command_finish(argparse.Namespace(id=room_id))
                 self.assertFalse(directory.exists())
             finally:
-                if process.is_alive():
-                    process.terminate()
-                    process.join(timeout=5)
-                    if process.is_alive():
-                        process.kill()
-                        process.join(timeout=5)
+                server.shutdown()
+                server.server_close()
+                server_thread.join(timeout=5)
                 bridge.safe_remove_room(directory)
                 if previous_home is None:
                     os.environ.pop("SESSION_BRIDGE_HOME", None)
