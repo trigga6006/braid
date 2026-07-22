@@ -40,7 +40,9 @@ class Session:
             "updated": iso_time(self.updated),
             "archived": self.archived,
             "transcript_available": self.transcript is not None,
-            "aliases": list(dict.fromkeys((self.session_id, self.resume_id, *self.aliases))),
+            "aliases": list(
+                dict.fromkeys((self.session_id, self.resume_id, *self.aliases))
+            ),
         }
 
 
@@ -54,7 +56,11 @@ class Message:
 def iso_time(value: float) -> str:
     if not value:
         return ""
-    return dt.datetime.fromtimestamp(value, tz=dt.timezone.utc).isoformat().replace("+00:00", "Z")
+    return (
+        dt.datetime.fromtimestamp(value, tz=dt.timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
 def read_jsonl(path: Path) -> Iterable[dict[str, Any]]:
@@ -76,7 +82,9 @@ def codex_home() -> Path:
 
 
 def claude_home() -> Path:
-    return Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")).expanduser()
+    return Path(
+        os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")
+    ).expanduser()
 
 
 def claude_desktop_roots() -> list[Path]:
@@ -84,7 +92,13 @@ def claude_desktop_roots() -> list[Path]:
     appdata = os.environ.get("APPDATA")
     if appdata:
         roots.append(Path(appdata) / "Claude" / "claude-code-sessions")
-    roots.append(Path.home() / "Library" / "Application Support" / "Claude" / "claude-code-sessions")
+    roots.append(
+        Path.home()
+        / "Library"
+        / "Application Support"
+        / "Claude"
+        / "claude-code-sessions"
+    )
     unique: list[Path] = []
     for root in roots:
         if root not in unique:
@@ -94,7 +108,9 @@ def claude_desktop_roots() -> list[Path]:
 
 def first_codex_meta(path: Path) -> dict[str, Any]:
     for index, record in enumerate(read_jsonl(path)):
-        if record.get("type") == "session_meta" and isinstance(record.get("payload"), dict):
+        if record.get("type") == "session_meta" and isinstance(
+            record.get("payload"), dict
+        ):
             return record["payload"]
         if index >= 30:
             break
@@ -109,10 +125,16 @@ def discover_codex() -> list[Session]:
         for record in read_jsonl(index_path):
             sid = str(record.get("id", ""))
             if sid:
-                names[sid] = (str(record.get("thread_name", "")), str(record.get("updated_at", "")))
+                names[sid] = (
+                    str(record.get("thread_name", "")),
+                    str(record.get("updated_at", "")),
+                )
 
     found: dict[str, Session] = {}
-    for root, archived in ((home / "sessions", False), (home / "archived_sessions", True)):
+    for root, archived in (
+        (home / "sessions", False),
+        (home / "archived_sessions", True),
+    ):
         if not root.exists():
             continue
         for path in root.rglob("*.jsonl"):
@@ -141,7 +163,9 @@ def discover_codex() -> list[Session]:
     return list(found.values())
 
 
-def discover_claude_desktop_metadata() -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+def discover_claude_desktop_metadata() -> tuple[
+    dict[str, dict[str, Any]], dict[str, dict[str, Any]]
+]:
     by_cli: dict[str, dict[str, Any]] = {}
     by_desktop: dict[str, dict[str, Any]] = {}
     for root in claude_desktop_roots():
@@ -161,7 +185,9 @@ def discover_claude_desktop_metadata() -> tuple[dict[str, dict[str, Any]], dict[
             value["_metadata_path"] = str(path)
             if cli_id:
                 prior = by_cli.get(cli_id)
-                if prior is None or int(value.get("lastActivityAt", 0) or 0) >= int(prior.get("lastActivityAt", 0) or 0):
+                if prior is None or int(value.get("lastActivityAt", 0) or 0) >= int(
+                    prior.get("lastActivityAt", 0) or 0
+                ):
                     by_cli[cli_id] = value
             if desktop_id:
                 by_desktop[desktop_id] = value
@@ -231,7 +257,9 @@ def discover_claude() -> list[Session]:
             cwd=str(desktop.get("cwd", "")),
             updated=updated_ms / 1000 if updated_ms else 0,
             archived=bool(desktop.get("isArchived", False)),
-            aliases=tuple(x for x in (desktop_id, cli_id, str(desktop.get("title", ""))) if x),
+            aliases=tuple(
+                x for x in (desktop_id, cli_id, str(desktop.get("title", ""))) if x
+            ),
         )
     return list(found.values())
 
@@ -247,23 +275,48 @@ def discover(provider: str = "all") -> list[Session]:
 
 def matches(session: Session, query: str) -> bool:
     needle = query.casefold()
-    values = [session.provider, session.surface, session.session_id, session.resume_id, session.title, session.cwd, *session.aliases]
+    values = [
+        session.provider,
+        session.surface,
+        session.session_id,
+        session.resume_id,
+        session.title,
+        session.cwd,
+        *session.aliases,
+    ]
     return any(needle in str(value).casefold() for value in values if value)
 
 
 def resolve_session(identifier: str, provider: str = "all") -> Session:
     sessions = discover(provider)
     folded = identifier.casefold()
-    exact = [item for item in sessions if any(str(value).casefold() == folded for value in (item.session_id, item.resume_id, item.title, *item.aliases) if value)]
+    exact = [
+        item
+        for item in sessions
+        if any(
+            str(value).casefold() == folded
+            for value in (item.session_id, item.resume_id, item.title, *item.aliases)
+            if value
+        )
+    ]
     candidates = exact or [item for item in sessions if matches(item, identifier)]
     # De-duplicate records by provider and resume id.
-    unique: dict[tuple[str, str], Session] = {(item.provider, item.resume_id or item.session_id): item for item in candidates}
+    unique: dict[tuple[str, str], Session] = {
+        (item.provider, item.resume_id or item.session_id): item for item in candidates
+    }
     candidates = list(unique.values())
     if not candidates:
-        raise SystemExit(f"No local session matched {identifier!r}. Run list --query with a shorter fragment.")
+        raise SystemExit(
+            f"No local session matched {identifier!r}. Run list --query with a shorter fragment."
+        )
     if len(candidates) > 1:
-        details = "\n".join(f"- {item.provider}: {item.session_id} | {item.title or '(untitled)'} | {item.cwd}" for item in candidates[:12])
-        raise SystemExit(f"Session identifier is ambiguous; choose a full ID:\n{details}")
+        details = "\n".join(
+            f"- {item.provider}: {item.session_id} | {item.title or '(untitled)'} | {item.cwd}"
+            for item in candidates[:12]
+        )
+        raise SystemExit(
+            f"Session identifier is ambiguous; choose a full ID:\n{details}"
+        )
     return candidates[0]
 
 
@@ -276,7 +329,9 @@ def block_text(content: Any) -> str:
     for block in content:
         if not isinstance(block, dict):
             continue
-        if block.get("type") in ("text", "input_text", "output_text") and isinstance(block.get("text"), str):
+        if block.get("type") in ("text", "input_text", "output_text") and isinstance(
+            block.get("text"), str
+        ):
             pieces.append(block["text"].strip())
     return "\n\n".join(piece for piece in pieces if piece)
 
@@ -294,7 +349,11 @@ def extract_codex(path: Path) -> list[Message]:
             continue
         text = block_text(payload.get("content"))
         if text:
-            messages.append(Message(role=role, text=text, timestamp=str(record.get("timestamp", ""))))
+            messages.append(
+                Message(
+                    role=role, text=text, timestamp=str(record.get("timestamp", ""))
+                )
+            )
     return dedupe_messages(messages)
 
 
@@ -304,7 +363,11 @@ def extract_claude(path: Path) -> list[Message]:
         kind = record.get("type")
         if kind not in ("user", "assistant") or record.get("isSidechain"):
             continue
-        if kind == "user" and (record.get("isMeta") or record.get("toolUseResult") or record.get("sourceToolUseID")):
+        if kind == "user" and (
+            record.get("isMeta")
+            or record.get("toolUseResult")
+            or record.get("sourceToolUseID")
+        ):
             continue
         message = record.get("message")
         if not isinstance(message, dict):
@@ -314,20 +377,30 @@ def extract_claude(path: Path) -> list[Message]:
             continue
         text = block_text(message.get("content"))
         if text:
-            messages.append(Message(role=role, text=text, timestamp=str(record.get("timestamp", ""))))
+            messages.append(
+                Message(
+                    role=role, text=text, timestamp=str(record.get("timestamp", ""))
+                )
+            )
     return dedupe_messages(messages)
 
 
 def dedupe_messages(messages: list[Message]) -> list[Message]:
     result: list[Message] = []
     for message in messages:
-        if result and result[-1].role == message.role and result[-1].text == message.text:
+        if (
+            result
+            and result[-1].role == message.role
+            and result[-1].text == message.text
+        ):
             continue
         result.append(message)
     return result
 
 
-def limited_messages(messages: list[Message], max_chars: int) -> tuple[list[Message], int]:
+def limited_messages(
+    messages: list[Message], max_chars: int
+) -> tuple[list[Message], int]:
     if max_chars <= 0:
         return messages, 0
     selected: list[Message] = []
@@ -337,7 +410,10 @@ def limited_messages(messages: list[Message], max_chars: int) -> tuple[list[Mess
         if selected and used + size > max_chars:
             break
         if not selected and size > max_chars:
-            clipped = "[Earlier part of this message was truncated.]\n" + message.text[-max_chars:]
+            clipped = (
+                "[Earlier part of this message was truncated.]\n"
+                + message.text[-max_chars:]
+            )
             selected.append(Message(message.role, clipped, message.timestamp))
             used = len(clipped)
             break
@@ -349,8 +425,14 @@ def limited_messages(messages: list[Message], max_chars: int) -> tuple[list[Mess
 
 def transcript_payload(session: Session, max_chars: int) -> dict[str, Any]:
     if session.transcript is None or not session.transcript.exists():
-        raise SystemExit("This session has no local transcript. Continue/import it to a local surface first.")
-    messages = extract_codex(session.transcript) if session.provider == "codex" else extract_claude(session.transcript)
+        raise SystemExit(
+            "This session has no local transcript. Continue/import it to a local surface first."
+        )
+    messages = (
+        extract_codex(session.transcript)
+        if session.provider == "codex"
+        else extract_claude(session.transcript)
+    )
     chosen, omitted = limited_messages(messages, max_chars)
     return {
         "session": session.public(),
@@ -401,9 +483,13 @@ def peer_prompt(prompt: str, request_id: str) -> str:
 def run_peer(session: Session, prompt: str, ephemeral: bool, dry_run: bool) -> str:
     executable = shutil.which("codex" if session.provider == "codex" else "claude")
     if not executable:
-        raise SystemExit(f"The {session.provider} CLI was not found on PATH. Run doctor for details.")
+        raise SystemExit(
+            f"The {session.provider} CLI was not found on PATH. Run doctor for details."
+        )
     if not session.resume_id:
-        raise SystemExit("This desktop session has no local resume ID. Continue/import it locally first.")
+        raise SystemExit(
+            "This desktop session has no local resume ID. Continue/import it locally first."
+        )
     bridged = peer_prompt(prompt, str(uuid.uuid4()))
     if session.provider == "codex":
         command = [executable, "exec", "resume", "--skip-git-repo-check"]
@@ -412,20 +498,33 @@ def run_peer(session: Session, prompt: str, ephemeral: bool, dry_run: bool) -> s
         command.extend([session.resume_id, "-"])
         input_text = bridged
     else:
-        command = [executable, "-p", "--resume", session.resume_id, "--output-format", "json"]
+        command = [
+            executable,
+            "-p",
+            "--resume",
+            session.resume_id,
+            "--output-format",
+            "json",
+        ]
         if ephemeral:
             command.append("--no-session-persistence")
         command.append(bridged)
         input_text = None
     if dry_run:
-        return json.dumps({
-            "provider": session.provider,
-            "surface": session.surface,
-            "resume_id": session.resume_id,
-            "executable": executable,
-            "ephemeral": ephemeral,
-            "prompt_characters": len(bridged),
-        }, indent=2) + "\n"
+        return (
+            json.dumps(
+                {
+                    "provider": session.provider,
+                    "surface": session.surface,
+                    "resume_id": session.resume_id,
+                    "executable": executable,
+                    "ephemeral": ephemeral,
+                    "prompt_characters": len(bridged),
+                },
+                indent=2,
+            )
+            + "\n"
+        )
     completed = subprocess.run(
         command,
         input=input_text,
@@ -464,8 +563,14 @@ def command_list(args: argparse.Namespace) -> None:
     print("provider\tsurface\tsession_id\tresume_id\tupdated\tarchived\ttitle\tcwd")
     for item in sessions:
         values = [
-            item.provider, item.surface, item.session_id, item.resume_id, iso_time(item.updated),
-            str(item.archived).lower(), item.title.replace("\t", " "), item.cwd.replace("\t", " "),
+            item.provider,
+            item.surface,
+            item.session_id,
+            item.resume_id,
+            iso_time(item.updated),
+            str(item.archived).lower(),
+            item.title.replace("\t", " "),
+            item.cwd.replace("\t", " "),
         ]
         print("\t".join(values))
 
@@ -477,16 +582,24 @@ def command_resolve(args: argparse.Namespace) -> None:
 def command_export(args: argparse.Namespace) -> None:
     session = resolve_session(args.session, args.provider)
     payload = transcript_payload(session, args.max_chars)
-    text = json.dumps(payload, indent=2) + "\n" if args.format == "json" else render_markdown(payload)
+    text = (
+        json.dumps(payload, indent=2) + "\n"
+        if args.format == "json"
+        else render_markdown(payload)
+    )
     write_output(text, args.output)
 
 
 def command_ask(args: argparse.Namespace) -> None:
     if not args.peer_idle:
-        raise SystemExit("Refusing live resume without --peer-idle. Confirm with the human that the peer app/session is idle first.")
+        raise SystemExit(
+            "Refusing live resume without --peer-idle. Confirm with the human that the peer app/session is idle first."
+        )
     sources = sum(bool(value) for value in (args.prompt, args.prompt_file, args.stdin))
     if sources != 1:
-        raise SystemExit("Choose exactly one prompt source: --prompt, --prompt-file, or --stdin.")
+        raise SystemExit(
+            "Choose exactly one prompt source: --prompt, --prompt-file, or --stdin."
+        )
     if args.prompt_file:
         prompt = Path(args.prompt_file).expanduser().read_text(encoding="utf-8")
     elif args.stdin:
@@ -497,7 +610,9 @@ def command_ask(args: argparse.Namespace) -> None:
         raise SystemExit("The peer request is empty.")
     session = resolve_session(args.session, args.provider)
     if session.archived:
-        raise SystemExit("The peer is archived. Restore it in its application before a live turn; export remains available.")
+        raise SystemExit(
+            "The peer is archived. Restore it in its application before a live turn; export remains available."
+        )
     response = run_peer(session, prompt, args.ephemeral, args.dry_run)
     write_output(response, args.output)
 
@@ -524,38 +639,58 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     list_parser = subparsers.add_parser("list", help="List discoverable local sessions")
-    list_parser.add_argument("--provider", choices=("all", "codex", "claude"), default="all")
+    list_parser.add_argument(
+        "--provider", choices=("all", "codex", "claude"), default="all"
+    )
     list_parser.add_argument("--query", default="")
     list_parser.add_argument("--limit", type=int, default=20)
     list_parser.add_argument("--json", action="store_true")
     list_parser.set_defaults(function=command_list)
 
-    resolve_parser = subparsers.add_parser("resolve", help="Resolve an ID/title to one canonical session")
+    resolve_parser = subparsers.add_parser(
+        "resolve", help="Resolve an ID/title to one canonical session"
+    )
     resolve_parser.add_argument("--session", required=True)
-    resolve_parser.add_argument("--provider", choices=("all", "codex", "claude"), default="all")
+    resolve_parser.add_argument(
+        "--provider", choices=("all", "codex", "claude"), default="all"
+    )
     resolve_parser.set_defaults(function=command_resolve)
 
-    export_parser = subparsers.add_parser("export", help="Export normalized user/assistant transcript text")
+    export_parser = subparsers.add_parser(
+        "export", help="Export normalized user/assistant transcript text"
+    )
     export_parser.add_argument("--session", required=True)
-    export_parser.add_argument("--provider", choices=("all", "codex", "claude"), default="all")
+    export_parser.add_argument(
+        "--provider", choices=("all", "codex", "claude"), default="all"
+    )
     export_parser.add_argument("--max-chars", type=int, default=200000)
-    export_parser.add_argument("--format", choices=("markdown", "json"), default="markdown")
+    export_parser.add_argument(
+        "--format", choices=("markdown", "json"), default="markdown"
+    )
     export_parser.add_argument("--output")
     export_parser.set_defaults(function=command_export)
 
-    ask_parser = subparsers.add_parser("ask", help="Send one focused turn to an idle peer session")
+    ask_parser = subparsers.add_parser(
+        "ask", help="Send one focused turn to an idle peer session"
+    )
     ask_parser.add_argument("--session", required=True)
-    ask_parser.add_argument("--provider", choices=("all", "codex", "claude"), default="all")
+    ask_parser.add_argument(
+        "--provider", choices=("all", "codex", "claude"), default="all"
+    )
     ask_parser.add_argument("--prompt")
     ask_parser.add_argument("--prompt-file")
     ask_parser.add_argument("--stdin", action="store_true")
-    ask_parser.add_argument("--peer-idle", action="store_true", help="Human confirmed the peer is idle")
+    ask_parser.add_argument(
+        "--peer-idle", action="store_true", help="Human confirmed the peer is idle"
+    )
     ask_parser.add_argument("--ephemeral", action="store_true")
     ask_parser.add_argument("--dry-run", action="store_true")
     ask_parser.add_argument("--output")
     ask_parser.set_defaults(function=command_ask)
 
-    doctor_parser = subparsers.add_parser("doctor", help="Report local dependencies and session stores")
+    doctor_parser = subparsers.add_parser(
+        "doctor", help="Report local dependencies and session stores"
+    )
     doctor_parser.set_defaults(function=command_doctor)
     return parser
 

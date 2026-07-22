@@ -1,4 +1,4 @@
 interface:
   display_name: "Session Bridge"
-  short_description: "Let Claude and Codex securely catch up"
-  default_prompt: "Use $session-bridge to connect this session with another agent for an active, task-scoped catch-up and synchronized summary."
+  short_description: "Sync governed context across existing agents"
+  default_prompt: "Use $session-bridge to stage, inspect, digest-approve, and exchange a recipient-minimized signed Context Pack with another existing agent; reconcile differences and keep the scoped catch-up active until both sides share the same summary."

@@ -34,7 +34,10 @@ class SessionTranscriptTests(unittest.TestCase):
         )
 
     def test_recent_message_limit_marks_omitted_context(self) -> None:
-        messages = [bridge.Message("user", "a" * 80), bridge.Message("assistant", "b" * 80)]
+        messages = [
+            bridge.Message("user", "a" * 80),
+            bridge.Message("assistant", "b" * 80),
+        ]
         selected, omitted = bridge.limited_messages(messages, 100)
         self.assertEqual(len(selected), 1)
         self.assertEqual(omitted, 1)

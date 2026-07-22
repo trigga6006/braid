@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "session-bridge"
+version = "0.3.0"
+description = "Governed context synchronization for existing Claude Code and Codex sessions"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+authors = [{name = "Session Bridge contributors"}]
+keywords = ["agents", "context", "codex", "claude", "a2a", "mcp"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
+dependencies = ["cryptography==48.0.1"]
+
+[project.urls]
+Homepage = "https://github.com/trigga6006/session-bridge"
+Repository = "https://github.com/trigga6006/session-bridge"
+Issues = "https://github.com/trigga6006/session-bridge/issues"
+
+[project.scripts]
+session-bridge = "session_bridge:main"
+session-bridge-network = "network_bridge:main"
+braid = "context_bridge:main"
+braid-mcp = "context_mcp:main"
+
+[tool.setuptools]
+package-dir = {"" = "scripts"}
+py-modules = [
+  "session_bridge", "network_bridge", "context_adapters", "context_bridge",
+  "context_extract", "context_mcp", "context_model", "context_policy",
+  "context_security", "context_store",
+]

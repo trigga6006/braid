@@ -16,24 +16,50 @@ jobs:
         python: ["3.11", "3.13"]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python }}
           cache: pip
       - run: python -m pip install --requirement requirements.txt
       - run: python -m pip install ruff==0.15.13
-      - run: ruff check scripts tests
-      - run: python -m py_compile scripts/session_bridge.py scripts/network_bridge.py
+      - run: ruff check scripts tests benchmarks
+      - run: ruff format --check scripts tests benchmarks
+      - run: python -m compileall -q scripts benchmarks tests
       - run: python -m unittest discover -s tests -v
+      - run: python -m benchmarks.product_benchmark --out benchmark-results
+      - run: python -m benchmarks.lifecycle_benchmark --sizes 10 100 --iterations 1 --out benchmark-results/lifecycle.json
+      - run: python -m pip install --no-deps .
+      - run: braid --help
 
   dependency-audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
           cache: pip
       - run: python -m pip install pip-audit==2.10.1
       - run: python -m pip_audit --requirement requirements.txt
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: python -m pip install --requirement requirements.txt build==1.5.0 twine==6.2.0 pytest==8.4.2
+      - run: python -m build --sdist --wheel
+      - run: python -m twine check dist/*
+      - name: Verify the source distribution is self-testing
+        shell: bash
+        run: |
+          mkdir -p /tmp/session-bridge-sdist
+          tar -xzf dist/*.tar.gz -C /tmp/session-bridge-sdist
+          source_root="$(find /tmp/session-bridge-sdist -mindepth 1 -maxdepth 1 -type d -print -quit)"
+          (cd "$source_root" && python -m pytest -q)
+      - run: python -m pip install --force-reinstall dist/*.whl
+      - run: session-bridge --help && session-bridge-network --help && braid --help && braid-mcp --help
