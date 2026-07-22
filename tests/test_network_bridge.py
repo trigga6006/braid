@@ -923,9 +923,10 @@ class NetworkBridgeTests(unittest.TestCase):
             crypto_site = str(
                 Path(sys.modules["cryptography"].__file__).resolve().parent.parent
             )
-            child_environment["PYTHONPATH"] = os.pathsep.join(
-                filter(None, (crypto_site, child_environment.get("PYTHONPATH", "")))
-            )
+            if not Path(crypto_site).is_relative_to(Path(sys.prefix).resolve()):
+                child_environment["PYTHONPATH"] = os.pathsep.join(
+                    filter(None, (crypto_site, child_environment.get("PYTHONPATH", "")))
+                )
             process = subprocess.Popen(
                 [
                     sys.executable,
@@ -938,7 +939,7 @@ class NetworkBridgeTests(unittest.TestCase):
                 ],
                 env=child_environment,
                 stdout=subprocess.DEVNULL,
-                stderr=None,
+                stderr=subprocess.PIPE,
                 text=True,
             )
             try:
@@ -967,7 +968,13 @@ class NetworkBridgeTests(unittest.TestCase):
                     finally:
                         connection.close()
                 else:
-                    self.fail("Bridge server process did not become ready.")
+                    process.terminate()
+                    _, child_error = process.communicate(timeout=5)
+                    self.fail(
+                        "Bridge server process did not become ready; "
+                        f"port_handoff={port_file.exists()}, port={port}, "
+                        f"stderr={child_error[-2000:]}"
+                    )
                 client_private, client_public = bridge.generate_exchange_keypair()
                 key = bridge.derive_channel_key(
                     client_private, host_public, pair_secret, room_id
@@ -1166,12 +1173,13 @@ class NetworkBridgeTests(unittest.TestCase):
                     bridge.command_finish(argparse.Namespace(id=room_id))
                 self.assertFalse(directory.exists())
             finally:
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=5)
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=5)
                 bridge.safe_remove_room(directory)
                 if previous_home is None:
                     os.environ.pop("SESSION_BRIDGE_HOME", None)
