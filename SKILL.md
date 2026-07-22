@@ -1,6 +1,6 @@
 ---
 name: session-bridge
-description: Synchronize governed, provenance-linked context between existing Claude Code and Codex sessions locally or across the public internet. Use for team catch-ups, coding/research handoffs, semantic context diffs, recipient-minimized signed Context Packs, conflict reconciliation, synchronized summaries, or secure host/join collaboration between agents and desktop-app threads.
+description: Synchronize governed, provenance-linked context between existing Claude Code and Codex sessions locally, through temporary public rooms, or asynchronously through a self-hosted Team Hub. Use for team catch-ups, coding/research handoffs, scheduled project checkpoints, semantic context diffs, recipient-minimized signed Context Packs, conflict reconciliation, synchronized summaries, or secure agent collaboration.
 ---
 
 # Session Bridge
@@ -81,8 +81,50 @@ Delete temporary checkpoint, claims, watch, and bundle files after their require
 - Use local for another persisted session on this computer.
 - Use host to create a temporary one-peer room and private code.
 - Use join with a code from another computer.
+- Use team for a durable project whose enrolled endpoints do not need to be online together.
 
 Ask which mode only if intent is unclear.
+
+## Use an asynchronous team project
+
+Team mode uses the same endpoint identity and Context Ledger as temporary network mode. The self-hosted hub is a blind durable mailbox, not a knowledge base and not a second context store. It can route ciphertext and retain receipts, but it cannot read, accept, reconcile, or summarize a Context Pack.
+
+Enroll only from a private short-lived code supplied by the team administrator. Read the code from a temporary file, enroll, then delete it:
+
+```text
+session-bridge-team enroll --project "<local-alias>" --code-file "<code-path>"
+session-bridge-team directory --project "<local-alias>"
+session-bridge-team status --project "<local-alias>"
+```
+
+Before the first disclosure to another endpoint, compare its exact `ed25519:<key-id>` principal through an already trusted channel and ask the local user to confirm that one-time trust decision. Never trust an editable label or a directory entry automatically. After confirmation, pin the endpoint-signed mailbox binding and current project role:
+
+```text
+session-bridge-team trust --project "<local-alias>" --principal "<peer-principal>"
+```
+
+Treat `untrusted` and `changed` directory states as a hard exchange stop. Outgoing publication fails and inbound envelopes are rejected before quarantine. Do not work around either state; re-verify the principal and intended role out of band. Ordinary in-scope exchanges need no repeated approval after the binding is trusted.
+
+At the beginning of substantial work, run a sync. Review every returned quarantine token with the existing `review-import` flow; accept only expected in-scope packs or reconcile divergent revisions. Transport receipt is never context acceptance:
+
+```text
+session-bridge-team sync --project "<local-alias>" --ledger-project "<ledger-project>"
+```
+
+At the end of substantial work, create the normal Markdown checkpoint, extract, review, approve the exact digest, and commit. Then publish the current reviewed head. Use `project-agents` when the team has an always-on librarian, or `team` when every enrolled teammate should receive a separately minimized and encrypted copy:
+
+```text
+session-bridge-team publish --project "<local-alias>" --ledger-project "<ledger-project>" --audience <project-agents|team> --purpose "<scope> checkpoint" --max-sensitivity internal
+session-bridge-team sync --project "<local-alias>" --ledger-project "<ledger-project>"
+```
+
+An explicitly configured connector may run every 12 hours and publish only a changed, already-reviewed ledger head. It preserves the protected outbox across restarts and retries temporary connectivity failures with bounded backoff:
+
+```text
+session-bridge-team run --project "<local-alias>" --ledger-project "<ledger-project>" --interval-seconds 43200 --publish-head --audience project-agents
+```
+
+Do not describe this as automatic transcript dumping. The schedule automates delivery of committed state only to locally trusted endpoints; it does not bypass stage review, disclose raw vendor transcripts, accept inbound claims, silently resolve conflicts, or wake a closed Claude/Codex application. A project agent is an ordinary enrolled recipient with its own key, policy, ledger, and model runtime—not a privileged relay feature.
 
 For a canonical cross-computer Context Pack round trip:
 
@@ -225,4 +267,4 @@ Do not edit vendor session files, live-resume the driver as its own peer, recurs
 python "<skill-dir>/scripts/session_bridge.py" doctor
 ```
 
-Read [references/network-mode.md](references/network-mode.md) for protocol/security details, [references/context-ledger.md](references/context-ledger.md) for semantic invariants, and [references/surfaces.md](references/surfaces.md) for application compatibility.
+Read [references/team-hub.md](references/team-hub.md) for asynchronous self-hosting, [references/network-mode.md](references/network-mode.md) for temporary-room protocol/security details, [references/context-ledger.md](references/context-ledger.md) for semantic invariants, and [references/surfaces.md](references/surfaces.md) for application compatibility.

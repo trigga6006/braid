@@ -29,8 +29,17 @@ jobs:
       - run: python -m unittest discover -s tests -v
       - run: python -m benchmarks.product_benchmark --out benchmark-results
       - run: python -m benchmarks.lifecycle_benchmark --sizes 10 100 --iterations 1 --out benchmark-results/lifecycle.json
+      - run: python -m benchmarks.team_hub_benchmark --messages 100 --workers 8 --out benchmark-results/team-hub.json
       - run: python -m pip install --no-deps .
-      - run: braid --help
+      - name: Verify every installed command
+        shell: bash
+        run: |
+          session-bridge --help
+          session-bridge-network --help
+          session-bridge-hub --help
+          session-bridge-team --help
+          braid --help
+          braid-mcp --help
 
   dependency-audit:
     runs-on: ubuntu-latest
@@ -62,4 +71,40 @@ jobs:
           source_root="$(find /tmp/session-bridge-sdist -mindepth 1 -maxdepth 1 -type d -print -quit)"
           (cd "$source_root" && python -m pytest -q)
       - run: python -m pip install --force-reinstall dist/*.whl
-      - run: session-bridge --help && session-bridge-network --help && braid --help && braid-mcp --help
+      - name: Verify every wheel entry point
+        run: session-bridge --help && session-bridge-network --help && session-bridge-hub --help && session-bridge-team --help && braid --help && braid-mcp --help
+
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: docker compose config --quiet
+      - run: docker build --tag session-bridge:test .
+      - name: Boot and verify the hardened Team Hub image
+        shell: bash
+        run: |
+          docker volume create session-bridge-ci-data
+          docker run --detach --name session-bridge-ci \
+            --read-only \
+            --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --mount source=session-bridge-ci-data,target=/data \
+            --publish 127.0.0.1:8787:8787 \
+            --env SESSION_BRIDGE_HUB_PUBLIC_URL=http://127.0.0.1:8787 \
+            session-bridge:test \
+            serve --bind 0.0.0.0 --port 8787 --allow-insecure-http \
+            --bootstrap-team "CI Team" --bootstrap-project "CI Project"
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8787/healthz >/dev/null; then
+              break
+            fi
+            if [ "$attempt" = 30 ]; then
+              docker logs session-bridge-ci
+              exit 1
+            fi
+            sleep 1
+          done
+          test "$(docker exec session-bridge-ci id -u)" = "10001"
+          docker exec session-bridge-ci session-bridge-hub --data-dir /data status
+          docker exec session-bridge-ci session-bridge-hub --data-dir /data verify

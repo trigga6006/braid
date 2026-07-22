@@ -12,12 +12,13 @@ Session Bridge should be evaluated against one question: can independently owned
 - quarantine, trust-on-first-accept, policy rollback detection, and conflict-preserving merge;
 - disclosure ledger and synchronized project-state summaries.
 - ephemeral, encrypted, scope-bound coordination notes that never become durable context implicitly.
+- asynchronous endpoint enrollment, opaque project mailboxes, offline delivery, and scheduled transport of already reviewed revisions;
 
 ## External boundaries and deliberately unimplemented layers
 
 - A2A discovery, task/message lifecycle, and conformant transport;
 - MCP invocation and transport beyond the shipped local stdio surface;
-- organization identity, service discovery, and general message fabrics (no AGNTCY/SLIM integration is shipped);
+- organization SSO identity and general cross-organization discovery (Team Hub ships a scoped enrolled-endpoint directory, not a universal agent directory);
 - agent scheduling, delegation, workflow orchestration, and tool execution;
 - generic email/chat/inbox experiences.
 

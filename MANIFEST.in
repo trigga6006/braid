@@ -1,6 +1,10 @@
 include SKILL.md
 include SECURITY.md
 include requirements.txt
+include Dockerfile
+include compose.yaml
+include .dockerignore
+include .env.example
 graft agents
 graft assets
 graft benchmarks

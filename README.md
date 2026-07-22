@@ -14,6 +14,8 @@
 
 Session Bridge connects existing Claude Code and Codex sessions locally or across the public internet. Its Context Ledger turns useful session state into typed, provenance-linked, versioned claims; minimizes those claims for a named recipient; signs and encrypts the disclosure; then quarantines and reconciles it at the other end without silently choosing a winner.
 
+For teams, the self-hosted Team Hub adds durable asynchronous mailboxes. Developers no longer need to start a temporary room at the same time: an endpoint connector can queue an approved Context Pack, the blind hub can retain its ciphertext while a teammate is offline, and the teammate's next sync places it into the existing Context Ledger quarantine. An optional always-on project agent can receive separately addressed checkpoints and produce scheduled project summaries.
+
 It is built for the handoff that a ticket cannot capture: the research, decisions, constraints, rejected paths, tests, uncertainty, and open questions still living inside independent agent threads.
 
 ## The boundary
@@ -26,6 +28,7 @@ Session Bridge is not another generic agent protocol, tool bus, directory, or or
 | [MCP](https://modelcontextprotocol.io/specification/) | A local stdio server exposes the full ledger quarantine/review/accept lifecycle as closed-schema tools/resources. MCP owns invocation and transport, not context semantics. |
 | [AGNTCY / SLIM](https://docs.agntcy.org/) | No integration is shipped. Those projects address directory, identity, messaging, and observability; Session Bridge does not claim those capabilities. |
 | Scoped coordination | The temporary encrypted bridge includes short-lived task-scoped notes for questions and acknowledgements. Notes are not ledger state and cannot bypass signed disclosure acceptance. |
+| Team Hub | A self-hosted blind store-and-forward layer owns enrollment, project membership, public mailbox keys, opaque queues, receipts, and retention. It cannot read or merge Context Packs. |
 | Context Ledger | Owns extraction, semantic revisions, recipient minimization, disclosure grants, provenance, freshness, conflicts, quarantine, and the who-was-issued-what audit. |
 
 The durable unit is a context change, not a chat message:
@@ -56,7 +59,7 @@ For the packaged developer CLIs:
 python -m pip install "git+https://github.com/trigga6006/session-bridge.git"
 ```
 
-This installs `session-bridge`, `session-bridge-network`, `braid`, and `braid-mcp`. The skill can also run its checked-in scripts directly, so a global package install is optional.
+This installs `session-bridge`, `session-bridge-network`, `session-bridge-hub`, `session-bridge-team`, `braid`, and `braid-mcp`. The skill can also run its checked-in scripts directly, so a global package install is optional.
 
 ## Fastest agent workflow
 
@@ -132,6 +135,87 @@ braid --project phoenix reconcile --local <revision> --remote <revision>
 
 Divergent active claims with the same semantic key remain a durable unresolved conflict. With two heads, `reconcile` returns a one-use `reconciliation_token` and the exact conflict set. Pass that token to `resolve --claims <file> --message <reason> --reconciliation-token <token>`, then review, approve, and commit the resulting stage. Every conflict must be retained as a `disagreement` claim or explicitly superseded with provenance; a normal commit cannot collapse two heads.
 
+## Always-on self-hosted Team Hub
+
+Team Hub is the asynchronous team mode. It is deliberately a layer beside an issue tracker, knowledge base, or context graph—not a replacement. The server routes ciphertext and maintains project membership; endpoint connectors and Context Ledgers retain all plaintext semantics.
+
+Copy `.env.example` to `.env`, select the initial team and project, then start a local hub:
+
+```bash
+docker compose up -d --build
+```
+
+The Compose service runs as an unprivileged user with a read-only root filesystem, a persistent `/data` volume, dropped Linux capabilities, a health check, and a host port fixed to `127.0.0.1`. Team and project bootstrap is idempotent. Show its state and audit integrity:
+
+```bash
+docker compose exec team-hub session-bridge-hub --data-dir /data status
+docker compose exec team-hub session-bridge-hub --data-dir /data verify
+```
+
+On a VPS, keep the published port on loopback and put an HTTPS reverse proxy or managed private ingress in front of it. Set `SESSION_BRIDGE_HUB_PUBLIC_URL=https://bridge.example.com` before creating enrollment codes. Do not expose the Compose HTTP port directly to the public internet.
+
+Create one private, short-lived enrollment code per endpoint:
+
+```bash
+docker compose exec team-hub session-bridge-hub --data-dir /data enrollment \
+  --team Omni --project default --label Alice --role member
+```
+
+Use `--role project-agent` for an optional always-on project librarian. Transfer the code privately and enroll the endpoint through a temporary file:
+
+```bash
+session-bridge-team enroll --project omni --code-file enrollment-code.txt
+session-bridge-team directory --project omni
+session-bridge-team status --project omni
+```
+
+Delete the code file immediately after enrollment. Every subsequent API request proves possession of the endpoint's persistent Ed25519 key and includes a timestamp and one-use nonce. Server responses are signed by the server identity pinned in the enrollment code.
+
+Before sending context to a teammate for the first time, compare their displayed `ed25519:<key-id>` principal through an already trusted channel, then approve it once:
+
+```bash
+session-bridge-team trust --project omni --principal "ed25519:<key-id>"
+```
+
+Never approve an endpoint from its editable label alone. Each directory mailbox key carries the endpoint's own Ed25519 signature, and local trust pins that signed key binding plus its project role. A new endpoint or changed role remains `untrusted` or `changed` until explicitly approved; outgoing publication fails closed and incoming envelopes from that endpoint are rejected before quarantine. Use `untrust` to remove a local approval.
+
+An agent still uses `braid` to extract, review, approve, and commit context. After that review gate, it can publish the current head separately to every teammate or only to project agents:
+
+```bash
+session-bridge-team publish \
+  --project omni \
+  --ledger-project omni \
+  --audience project-agents \
+  --purpose "12-hour project checkpoint" \
+  --max-sensitivity internal
+
+session-bridge-team sync --project omni --ledger-project omni
+```
+
+`publish` is revision-aware: unchanged heads are not resent to the same recipient. Each recipient receives a distinct signed disclosure and X25519/HKDF/ChaCha20-Poly1305 mailbox envelope. Incoming packs are verified and placed into ledger quarantine; transport synchronization never accepts or merges them.
+
+Run a lightweight connector continuously or on a 12-hour schedule:
+
+```bash
+session-bridge-team run \
+  --project omni \
+  --ledger-project omni \
+  --interval-seconds 43200 \
+  --publish-head \
+  --audience project-agents
+```
+
+The long-running connector survives temporary network and Hub outages with bounded exponential backoff, preserves its encrypted outbox across restarts, and resumes the normal interval after a successful sync. This automates transport of already reviewed ledger state. It does not scrape raw Claude or Codex transcripts, silently approve a new stage, resolve divergent heads, or wake a vendor application that is no longer running. The next active agent task reviews quarantined changes, accepts or reconciles them, and starts with the updated project state.
+
+An administrator can immediately disable a lost or compromised endpoint:
+
+```bash
+docker compose exec team-hub session-bridge-hub --data-dir /data endpoint \
+  --principal "ed25519:<key-id>" --status disabled
+```
+
+See [the Team Hub architecture and trust boundary](references/team-hub.md).
+
 ## Public internet bridge
 
 Local discovery/export downloads nothing. Public joining needs pinned `cryptography` if it is not already available. Public hosting additionally uses a pinned, checksum-verified Cloudflare Tunnel helper; a managed HTTPS tunnel can be supplied instead. There is no Session Bridge account, DNS change, router configuration, or API key.
@@ -168,6 +252,7 @@ The relay rejects a disclosure addressed to anyone other than the approved chann
 - Append-only hash-chained audit, exact claim disclosure records, freshness states, revocation tombstones, and quarantine-first imports.
 - State transitions write a hash-chained intent before multi-file mutation; an incomplete transition makes audit verification fail closed instead of disappearing from forensic history.
 - The bundled tunnel helper is release- and SHA-256-pinned. Arbitrary `cloudflared` binaries found on `PATH` are not executed implicitly.
+- Team Hub enforces one-use enrollment, endpoint-signed requests and mailbox-key bindings, local peer/role pinning, replay nonces, signed server responses, project membership, bounded concurrency and socket lifetimes, request limits, per-mailbox count/byte quotas, endpoint and IP rate limits, idempotent message IDs, ciphertext expiry, acknowledgement-time payload erasure, and a hash-chained server audit.
 
 Read [SECURITY.md](SECURITY.md) and [the network security model](references/network-mode.md) before using sensitive material.
 
@@ -181,26 +266,28 @@ python -m compileall -q scripts benchmarks tests
 python -m unittest discover -s tests -v
 python -m benchmarks.product_benchmark --out benchmark-results
 python -m benchmarks.lifecycle_benchmark --iterations 3 --out benchmark-results/lifecycle.json
+python -m benchmarks.team_hub_benchmark --messages 250 --workers 16 --out benchmark-results/team-hub.json
 python -m benchmarks.context_quality.runner --engine reference --holdout-seed 20260722 --out benchmark-results/context-contract
 python -m pip install --no-deps .
 braid --help
 ```
 
-The product benchmark invokes the real extractor, semantic model, recipient planner, signing, quarantine, import, and conflict logic. It records required-context recall, low-signal suppression, compression, latency, peak Python allocation during extraction, conflict preservation, and signed round-trip gates. The lifecycle benchmark separately measures 10/100/500-claim stage-review-approve-commit-export-quarantine-review-accept latency, peak Python allocation, and signed bundle size. Adapter, receiver-replay, MCP lifecycle, review-gate, ancestry, rollback, head-bound, and encrypted retransmission behavior are covered by the test suite rather than the product benchmark. The separate context-quality harness is a protocol contract and adversarial evaluator; its `reference` engine is an oracle, not a product score.
+The product benchmark invokes the real extractor, semantic model, recipient planner, signing, quarantine, import, and conflict logic. It records required-context recall, low-signal suppression, compression, latency, peak Python allocation during extraction, conflict preservation, and signed round-trip gates. The lifecycle benchmark separately measures 10/100/500-claim stage-review-approve-commit-export-quarantine-review-accept latency, peak Python allocation, and signed bundle size. The Team Hub benchmark concurrently writes opaque envelopes through the transactional mailbox, pages and acknowledges them, and verifies audit integrity. Adapter, receiver-replay, MCP lifecycle, review-gate, ancestry, rollback, head-bound, and encrypted retransmission behavior are covered by the test suite rather than the product benchmark. The separate context-quality harness is a protocol contract and adversarial evaluator; its `reference` engine is an oracle, not a product score.
 
-See the checked-in [0.3.0 benchmark baseline](benchmarks/BASELINE.md) for reproducible commands, environment, results, and measurement limits.
+See the checked-in [benchmark baselines](benchmarks/BASELINE.md) for reproducible commands, environment, results, and measurement limits.
 
-CI runs lint and format checks, compilation, the full suite, the real-product benchmark, and package installation on Windows, macOS, and Ubuntu with Python 3.11 and 3.13. Separate Ubuntu jobs audit the pinned runtime dependency and build/check the wheel and self-testing source distribution.
+CI runs lint and format checks, compilation, the full suite, all three benchmark surfaces, and package installation on Windows, macOS, and Ubuntu with Python 3.11 and 3.13. Separate Ubuntu jobs audit the pinned runtime dependency, build/check the wheel and self-testing source distribution, and boot the hardened Docker image against its health, status, and audit endpoints.
 
 ## Release status and honest limits
 
-Version `0.3.x` is an open-source developer preview suitable for controlled team pilots, not a claim of SOC 2 readiness, guaranteed availability, or bug-free production use.
+Version `0.4.x` is an open-source developer preview suitable for controlled team pilots, not a claim of SOC 2 readiness, guaranteed availability, or bug-free production use.
 
 - Quick Tunnels provide convenience, not an enterprise SLA.
 - Endpoint compromise defeats confidentiality for context that endpoint may read.
 - Revocation cannot erase a copy already delivered; it prevents future local use/re-sharing and records intent.
 - Pairing principals are cryptographic endpoint pseudonyms with proof of key possession, not verified human or organization identities. Context authors are pinned on explicit first acceptance. Enterprise SSO/directory mapping, centralized lifecycle policy, transparency logging, retention enforcement, and compliance exports remain future control-plane work.
 - Agents cannot wake after their application ends a turn. The skill keeps the active turn watching while both agents are running.
+- Team Hub is a single-node SQLite service. It has durable offline mailboxes but no high-availability failover, server-side SSO, or multi-region replication.
 - Automatic extraction is deterministic and conservative, not an infallible semantic model. Review remains mandatory before commit/disclosure.
 
 Apache-2.0 licensed. Contributions and security reports are welcome.

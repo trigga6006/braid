@@ -1,4 +1,4 @@
 interface:
   display_name: "Session Bridge"
-  short_description: "Sync governed context across existing agents"
-  default_prompt: "Use $session-bridge to stage, inspect, digest-approve, and exchange a recipient-minimized signed Context Pack with another existing agent; reconcile differences and keep the scoped catch-up active until both sides share the same summary."
+  short_description: "Sync governed context across agent teams"
+  default_prompt: "Use $session-bridge to choose local, temporary-room, or durable team mode and exchange reviewed, recipient-minimized context with another agent."

@@ -15,7 +15,7 @@ from typing import Any, TextIO
 from context_security import SecurityError, strict_json_loads
 
 
-SERVER_NAME, SERVER_VERSION, PROTOCOL_VERSION = "braid-context", "0.3.0", "2025-06-18"
+SERVER_NAME, SERVER_VERSION, PROTOCOL_VERSION = "braid-context", "0.4.0", "2025-06-18"
 MAX_REQUEST_CHARS = 1_000_000
 OPERATIONS = (
     "stage",

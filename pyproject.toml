@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "session-bridge"
-version = "0.3.0"
+version = "0.4.0"
 description = "Governed context synchronization for existing Claude Code and Codex sessions"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -28,6 +28,8 @@ Issues = "https://github.com/trigga6006/session-bridge/issues"
 [project.scripts]
 session-bridge = "session_bridge:main"
 session-bridge-network = "network_bridge:main"
+session-bridge-hub = "team_hub:main"
+session-bridge-team = "team_connector:main"
 braid = "context_bridge:main"
 braid-mcp = "context_mcp:main"
 
@@ -37,4 +39,6 @@ py-modules = [
   "session_bridge", "network_bridge", "context_adapters", "context_bridge",
   "context_extract", "context_mcp", "context_model", "context_policy",
   "context_security", "context_store",
+  "team_hub",
+  "team_connector",
 ]
