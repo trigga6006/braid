@@ -1,0 +1,34 @@
+services:
+  team-hub:
+    build:
+      context: .
+    command:
+      - serve
+      - --bind
+      - 0.0.0.0
+      - --port
+      - "8787"
+      - --allow-insecure-http
+      - --bootstrap-team
+      - ${SESSION_BRIDGE_TEAM:-Omni}
+      - --bootstrap-project
+      - ${SESSION_BRIDGE_PROJECT:-default}
+    environment:
+      SESSION_BRIDGE_HUB_PUBLIC_URL: ${SESSION_BRIDGE_HUB_PUBLIC_URL:-http://127.0.0.1:8787}
+      SESSION_BRIDGE_HOME: /data/runtime
+    ports:
+      - "127.0.0.1:${SESSION_BRIDGE_HUB_PORT:-8787}:8787"
+    volumes:
+      - session-bridge-hub-data:/data
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 20s
+
+volumes:
+  session-bridge-hub-data:

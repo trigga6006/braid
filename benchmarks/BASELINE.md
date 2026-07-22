@@ -1,4 +1,6 @@
-# Session Bridge 0.3.0 benchmark baseline
+# Session Bridge benchmark baselines
+
+## 0.3.0 Context Ledger baseline
 
 Measured 2026-07-22 on Windows 11 build 26200, CPython 3.13.3, 24 logical CPUs. These are warm, local, single-process measurements. Python allocation uses `tracemalloc`; it is not process RSS and excludes tunnel/TLS latency, keychain overhead, disk contention, and concurrent workloads.
 
@@ -31,3 +33,9 @@ The 500-claim row exercises the product's hard claim ceiling and completes with 
 ## Context-quality contract
 
 `python -m benchmarks.context_quality.runner --engine reference --holdout-seed 20260722 --out benchmark-results/final-context-contract` passed all 18 fixtures and hard gates. The reference engine is a deterministic contract oracle, not a score for automatic extraction quality.
+
+## 0.4.0 Team Hub baseline
+
+Measured on the same host with `python -m benchmarks.team_hub_benchmark --messages 250 --workers 16 --payload-bytes 4096 --out benchmark-results/team-hub-0.4.0.json`.
+
+The transactional SQLite Hub durably accepted all 250 unique opaque envelopes from 16 concurrent workers in 1.421 seconds (175.98 messages/second), paged all 250 in 29.66 ms, and acknowledged them in 22.81 ms. The audit chain verified after acknowledgement and the database plus WAL occupied 2,371,584 bytes. This is a single-host engineering baseline, not an availability or capacity SLA; reverse-proxy latency, network loss, container overhead, and multi-host contention are excluded.

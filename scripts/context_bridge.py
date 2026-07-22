@@ -13,7 +13,7 @@ from context_extract import extract_markdown_claims, extract_message_claims
 from context_store import ContextLedger, _atomic_json
 
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 
 def _local(value: str) -> Path:
