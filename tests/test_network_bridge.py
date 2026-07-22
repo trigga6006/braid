@@ -8,7 +8,6 @@ import io
 import json
 import os
 from pathlib import Path
-import socket
 import subprocess
 import sys
 import tempfile
@@ -909,15 +908,14 @@ class NetworkBridgeTests(unittest.TestCase):
                 directory / "host-context.json", {"context": host_context}
             )
             bridge.save_json(bridge.state_path(directory), state)
-            listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            listener.bind(("127.0.0.1", 0))
-            port = int(listener.getsockname()[1])
-            listener.close()
+            port_file = Path(home) / "server-port.txt"
             child_code = (
                 "import sys; from pathlib import Path; "
                 "sys.path.insert(0, sys.argv[1]); import network_bridge as b; "
-                "server=b.BoundedThreadingHTTPServer(('127.0.0.1', int(sys.argv[3])), b.BridgeHandler); "
-                "server.room_directory=Path(sys.argv[2]); server.serve_forever()"
+                "server=b.BoundedThreadingHTTPServer(('127.0.0.1', 0), b.BridgeHandler); "
+                "server.room_directory=Path(sys.argv[2]); "
+                "Path(sys.argv[3]).write_text(str(server.server_address[1]), encoding='ascii'); "
+                "server.serve_forever()"
             )
             child_environment = os.environ.copy()
             child_environment["SESSION_BRIDGE_HOME"] = home
@@ -936,7 +934,7 @@ class NetworkBridgeTests(unittest.TestCase):
                     child_code,
                     str(SCRIPTS),
                     str(directory),
-                    str(port),
+                    str(port_file),
                 ],
                 env=child_environment,
                 stdout=subprocess.DEVNULL,
@@ -944,11 +942,17 @@ class NetworkBridgeTests(unittest.TestCase):
                 text=True,
             )
             try:
-                deadline = time.monotonic() + 10
+                deadline = time.monotonic() + 30
+                port = 0
                 while time.monotonic() < deadline:
                     if process.poll() is not None:
                         process.communicate(timeout=1)
                         self.fail("Bridge server process exited during startup.")
+                    if not port and port_file.exists():
+                        port = int(port_file.read_text(encoding="ascii"))
+                    if not port:
+                        time.sleep(0.02)
+                        continue
                     connection = http.client.HTTPConnection(
                         "127.0.0.1", port, timeout=1
                     )
