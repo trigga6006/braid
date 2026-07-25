@@ -13,6 +13,9 @@ Session Bridge should be evaluated against one question: can independently owned
 - disclosure ledger and synchronized project-state summaries.
 - ephemeral, encrypted, scope-bound coordination notes that never become durable context implicitly.
 - asynchronous endpoint enrollment, opaque project mailboxes, offline delivery, and scheduled transport of already reviewed revisions;
+- signed Context Pull Requests with exact recipient, purpose, selectors,
+  baseline revision, sensitivity, claim/byte ceilings, terminal response
+  correlation, and request-aware quarantine;
 
 ## External boundaries and deliberately unimplemented layers
 
@@ -42,3 +45,7 @@ A release should fail if it cannot demonstrate all of the following:
 14. Pairing identities prove possession of persistent recipient keys and reject arbitrary principal aliases.
 15. Reviewing a stage is read-only; approval binds an exact digest and a changed stage cannot commit.
 16. Two heads cannot collapse without a current reconciliation plan that preserves or explicitly resolves every conflict.
+17. A trusted endpoint can request a bounded semantic delta, the peer can
+    answer asynchronously, and only matching claims enter receiver quarantine.
+18. Tampered, expired, unsolicited, selector-expanding, over-budget, or
+    differently duplicated Context Pull Responses fail closed.

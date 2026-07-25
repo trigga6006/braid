@@ -18,6 +18,8 @@ import time
 from typing import Any, Iterator, Mapping
 from urllib import error, request
 
+import context_exchange as exchange
+from context_model import canonical_json as canonical_context_json
 from context_security import (
     SecurityError,
     canonical_bytes,
@@ -47,6 +49,26 @@ class ConnectorError(ValueError):
 
 class TransientConnectorError(ConnectorError):
     """Connectivity or server-pressure failure that an always-on loop may retry."""
+
+
+class PermanentRejectionError(ConnectorError):
+    """A definitive server rejection that retrying cannot fix (drop, don't retry)."""
+
+
+# Hub error codes for a push that retrying the exact request cannot fix.  Keyed
+# by authenticated error CODE, not HTTP status, because 403/409 also cover
+# reversible cases (endpoint_not_active can be reactivated, replayed_request
+# succeeds with a fresh nonce) that must stay queued.
+PERMANENT_HUB_CODES = frozenset(
+    {
+        "invalid_envelope",
+        "invalid_envelope_time",
+        "invalid_push",
+        "envelope_too_large",
+        "not_a_project_member",
+        "message_id_conflict",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -228,29 +250,58 @@ def seal_context_pack(
         bridge.validate_disclosure_bundle(dict(bundle), recipient)
     except ValueError as error:
         raise ConnectorError(str(error)) from error
+    inner_expiry = int(bundle["export"]["expires_at"])
+    return seal_mailbox_payload(
+        bundle,
+        kind="context-pack",
+        project_id=project_id,
+        sender=sender,
+        recipient=recipient,
+        recipient_mailbox_key=recipient_mailbox_key,
+        ttl_seconds=ttl_seconds,
+        inner_expires_at=inner_expiry,
+    )
+
+
+def seal_mailbox_payload(
+    payload: Mapping[str, Any],
+    *,
+    kind: str,
+    project_id: str,
+    sender: str,
+    recipient: str,
+    recipient_mailbox_key: bytes,
+    ttl_seconds: int = hub.DEFAULT_MESSAGE_TTL_SECONDS,
+    inner_expires_at: int | None = None,
+) -> dict[str, Any]:
+    """Encrypt one strict application payload to an enrolled endpoint."""
+    if kind not in {"context-pack", "coordination-note"}:
+        raise ConnectorError("Mailbox payload kind is invalid.")
     if ttl_seconds < 1 or ttl_seconds > hub.MAX_MESSAGE_TTL_SECONDS:
         raise ConnectorError("Mailbox message lifetime is invalid.")
     private, ephemeral_public = bridge.generate_exchange_keypair()
     key = _mailbox_key(private, recipient_mailbox_key, project_id, sender, recipient)
     now = int(time.time())
-    inner_expiry = int(bundle["export"]["expires_at"])
     message_id = "msg_" + secrets.token_hex(16)
+    expiry = now + ttl_seconds
+    if inner_expires_at is not None:
+        expiry = min(expiry, inner_expires_at)
     header = {
         "format": hub.ENVELOPE_FORMAT,
         "message_id": message_id,
         "project_id": project_id,
         "sender": sender,
         "recipient": recipient,
-        "kind": "context-pack",
+        "kind": kind,
         "created_at": now,
-        "expires_at": min(now + ttl_seconds, inner_expiry),
+        "expires_at": expiry,
         "ephemeral_public_key": _b64e(ephemeral_public),
     }
     if header["expires_at"] <= now:
-        raise ConnectorError("Context Pack has already expired.")
-    plaintext = canonical_bytes(dict(bundle))
+        raise ConnectorError("Mailbox payload has already expired.")
+    plaintext = canonical_bytes(dict(payload))
     if len(plaintext) > hub.MAX_ENVELOPE_BYTES - 4096:
-        raise ConnectorError("Context Pack is too large for a Team Hub envelope.")
+        raise ConnectorError("Mailbox payload is too large for a Team Hub envelope.")
     _, _, _, _, _, ChaCha20Poly1305, _, _ = bridge.crypto_imports()
     nonce = secrets.token_bytes(12)
     ciphertext = ChaCha20Poly1305(key).encrypt(
@@ -270,6 +321,29 @@ def open_context_pack(
     expected_project: str,
     expected_recipient: str,
 ) -> dict[str, Any]:
+    bundle = open_mailbox_payload(
+        envelope,
+        mailbox_identity=mailbox_identity,
+        expected_project=expected_project,
+        expected_recipient=expected_recipient,
+        expected_kind="context-pack",
+    )
+    try:
+        bridge.validate_disclosure_bundle(bundle, expected_recipient)
+    except ValueError as error:
+        raise ConnectorError(str(error)) from error
+    return bundle
+
+
+def open_mailbox_payload(
+    envelope: Mapping[str, Any],
+    *,
+    mailbox_identity: MailboxIdentity,
+    expected_project: str,
+    expected_recipient: str,
+    expected_kind: str,
+) -> dict[str, Any]:
+    """Authenticate and decrypt one mailbox payload without interpreting it."""
     required = {
         "format",
         "message_id",
@@ -285,8 +359,10 @@ def open_context_pack(
     }
     if set(envelope) != required or envelope.get("format") != hub.ENVELOPE_FORMAT:
         raise ConnectorError("Invalid mailbox envelope.")
-    if envelope.get("kind") != "context-pack":
-        raise ConnectorError("Mailbox envelope is not a Context Pack.")
+    if expected_kind not in {"context-pack", "coordination-note"}:
+        raise ConnectorError("Expected mailbox payload kind is invalid.")
+    if envelope.get("kind") != expected_kind:
+        raise ConnectorError("Mailbox envelope kind is unexpected.")
     if envelope.get("project_id") != expected_project:
         raise ConnectorError("Mailbox envelope is for another project.")
     if envelope.get("recipient") != expected_recipient:
@@ -337,16 +413,12 @@ def open_context_pack(
     except InvalidTag as error:
         raise ConnectorError("Mailbox envelope authentication failed.") from error
     try:
-        bundle = strict_json_loads(plaintext)
+        payload = strict_json_loads(plaintext)
     except SecurityError as error:
-        raise ConnectorError("Decrypted Context Pack is invalid.") from error
-    if not isinstance(bundle, dict):
-        raise ConnectorError("Decrypted Context Pack must be an object.")
-    try:
-        bridge.validate_disclosure_bundle(bundle, expected_recipient)
-    except ValueError as error:
-        raise ConnectorError(str(error)) from error
-    return bundle
+        raise ConnectorError("Decrypted mailbox payload is invalid.") from error
+    if not isinstance(payload, dict):
+        raise ConnectorError("Decrypted mailbox payload must be an object.")
+    return payload
 
 
 class _NoRedirect(request.HTTPRedirectHandler):
@@ -366,7 +438,13 @@ class HubClient:
         self.timeout = timeout
         self._opener = request.build_opener(_NoRedirect())
 
-    def _post(self, path: str, value: Mapping[str, Any]) -> dict[str, Any]:
+    def _post(
+        self,
+        path: str,
+        value: Mapping[str, Any],
+        *,
+        request_nonce: str | None = None,
+    ) -> dict[str, Any]:
         raw = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
         target = self.server_url + path
         outgoing = request.Request(
@@ -384,16 +462,34 @@ class HubClient:
                     raise ConnectorError("Team Hub response is too large.")
         except error.HTTPError as failure:
             raw_error = failure.read(64_001)
+            code = ""
+            signed_error = False
             try:
                 parsed = strict_json_loads(raw_error)
-                message = parsed["error"]["message"]
-            except (SecurityError, KeyError, TypeError):
+                if request_nonce is not None and isinstance(parsed, Mapping):
+                    result = self._verify_response(
+                        path, parsed, request_nonce=request_nonce
+                    )
+                    error_body = result["error"]
+                    signed_error = True
+                else:
+                    error_body = parsed["error"]
+                message = error_body["message"]
+                code = str(error_body.get("code", ""))
+                if not isinstance(message, str):
+                    raise TypeError("error message is not text")
+            except (ConnectorError, SecurityError, KeyError, TypeError):
                 message = f"Team Hub returned HTTP {failure.code}."
-            failure_type = (
-                TransientConnectorError
-                if failure.code in {408, 425, 429} or failure.code >= 500
-                else ConnectorError
-            )
+            if failure.code in {408, 425, 429} or failure.code >= 500:
+                failure_type = TransientConnectorError
+            elif signed_error and code in PERMANENT_HUB_CODES:
+                # Definitive, message-specific rejection: retrying the exact
+                # request cannot succeed.  Classified by error code so reversible
+                # 403/409 cases (endpoint_not_active, replayed_request) stay
+                # queued instead of being dropped.
+                failure_type = PermanentRejectionError
+            else:
+                failure_type = ConnectorError
             raise failure_type(str(message)) from failure
         except error.URLError as failure:
             raise TransientConnectorError(
@@ -477,7 +573,7 @@ class HubClient:
         }
         return self._verify_response(
             path,
-            self._post(path, wrapper),
+            self._post(path, wrapper, request_nonce=nonce),
             request_nonce=nonce,
         )
 
@@ -496,6 +592,21 @@ class TeamConnector:
 
     def lock_path(self, alias: str) -> Path:
         return self.projects / f"{_safe_alias(alias)}.lock"
+
+    def exchange_state_path(self, alias: str, direction: str, request_id: str) -> Path:
+        if direction not in {"inbound", "outbound"}:
+            raise ConnectorError("Exchange direction is invalid.")
+        try:
+            request_id = hub._identifier(request_id, "request ID")
+        except hub.HubError as error:
+            raise ConnectorError(str(error)) from error
+        return (
+            self.home
+            / "team-exchanges"
+            / _safe_alias(alias)
+            / direction
+            / f"{request_id}.json"
+        )
 
     def load_config(self, alias: str) -> dict[str, Any]:
         path = self.config_path(alias)
@@ -821,6 +932,44 @@ class TeamConnector:
         )
         return {"local": config, "remote": remote}
 
+    def _trusted_endpoint(self, alias: str, principal: str) -> dict[str, Any]:
+        try:
+            principal = hub._principal(principal, "exchange peer principal")
+        except hub.HubError as error:
+            raise ConnectorError(str(error)) from error
+        directory = self.directory(alias)
+        matches = [
+            endpoint
+            for endpoint in directory.get("endpoints", [])
+            if isinstance(endpoint, dict) and endpoint.get("principal") == principal
+        ]
+        if len(matches) != 1:
+            raise ConnectorError("Exchange peer is not an active project endpoint.")
+        if matches[0].get("trust") != "trusted":
+            raise ConnectorError(
+                "Exchange peer is not locally trusted; compare its principal "
+                "through a trusted channel and run the trust command first."
+            )
+        return matches[0]
+
+    def _queue_envelope(
+        self,
+        alias: str,
+        envelope: Mapping[str, Any],
+        *,
+        request_id: str | None = None,
+        exchange_direction: str | None = None,
+    ) -> Path:
+        outbox = self.home / "team-outbox" / _safe_alias(alias)
+        path = outbox / f"{envelope['message_id']}.json"
+        record: dict[str, Any] = {"envelope": dict(envelope)}
+        if request_id is not None:
+            record["request_id"] = request_id
+        if exchange_direction is not None:
+            record["exchange_direction"] = exchange_direction
+        bridge.save_protected_json(path, record)
+        return path
+
     def queue_bundle(
         self, alias: str, bundle_path: Path, ttl_seconds: int
     ) -> dict[str, Any]:
@@ -830,22 +979,8 @@ class TeamConnector:
             recipient = str(bundle["export"]["recipient"])
         except (KeyError, TypeError) as error:
             raise ConnectorError("Context Pack recipient is missing.") from error
-        directory = self.directory(alias)
-        matches = [
-            endpoint
-            for endpoint in directory.get("endpoints", [])
-            if isinstance(endpoint, dict) and endpoint.get("principal") == recipient
-        ]
-        if len(matches) != 1:
-            raise ConnectorError(
-                "Context Pack recipient is not an active project endpoint."
-            )
-        if matches[0].get("trust") != "trusted":
-            raise ConnectorError(
-                "Context Pack recipient is not locally trusted; compare its principal "
-                "through a trusted channel and run the trust command first."
-            )
-        mailbox_public = _b64d(matches[0].get("mailbox_public_key"), 64)
+        endpoint = self._trusted_endpoint(alias, recipient)
+        mailbox_public = _b64d(endpoint.get("mailbox_public_key"), 64)
         if len(mailbox_public) != 32:
             raise ConnectorError("Recipient mailbox key is invalid.")
         envelope = seal_context_pack(
@@ -856,14 +991,163 @@ class TeamConnector:
             recipient_mailbox_key=mailbox_public,
             ttl_seconds=ttl_seconds,
         )
-        outbox = self.home / "team-outbox" / _safe_alias(alias)
-        path = outbox / f"{envelope['message_id']}.json"
-        bridge.save_protected_json(path, {"envelope": envelope})
+        path = self._queue_envelope(alias, envelope)
         return {
             "queued": True,
             "message_id": envelope["message_id"],
             "recipient": recipient,
             "outbox": str(path),
+        }
+
+    def queue_request(
+        self,
+        alias: str,
+        *,
+        recipient: str,
+        purpose: str,
+        question: str,
+        kinds: list[str] | None = None,
+        semantic_keys: list[str] | None = None,
+        labels: list[str] | None = None,
+        since_revision: str | None = None,
+        max_sensitivity: str = "internal",
+        max_claims: int = 50,
+        max_bytes: int = 250_000,
+        ttl_seconds: int = hub.DEFAULT_MESSAGE_TTL_SECONDS,
+    ) -> dict[str, Any]:
+        """Queue a signed pull request for a bounded semantic context change."""
+        config = self.load_config(alias)
+        endpoint = self._trusted_endpoint(alias, recipient)
+        mailbox_public = _b64d(endpoint.get("mailbox_public_key"), 64)
+        identity = load_or_create_identity(self.identity_path)
+        try:
+            pull_request = exchange.create_request(
+                identity,
+                project_id=str(config["project_id"]),
+                recipient=recipient,
+                purpose=purpose,
+                question=question,
+                kinds=kinds,
+                semantic_keys=semantic_keys,
+                labels=labels,
+                since_revision=since_revision,
+                max_sensitivity=max_sensitivity,
+                max_claims=max_claims,
+                max_bytes=max_bytes,
+                ttl_seconds=ttl_seconds,
+            )
+        except exchange.ContextExchangeError as error:
+            raise ConnectorError(str(error)) from error
+        envelope = seal_mailbox_payload(
+            pull_request,
+            kind="coordination-note",
+            project_id=str(config["project_id"]),
+            sender=str(config["principal"]),
+            recipient=recipient,
+            recipient_mailbox_key=mailbox_public,
+            ttl_seconds=ttl_seconds,
+            inner_expires_at=int(pull_request["expires_at"]),
+        )
+        request_id = str(pull_request["request_id"])
+        state_path = self.exchange_state_path(alias, "outbound", request_id)
+        bridge.save_protected_json(
+            state_path,
+            {
+                "format": "context-pull-state/v1",
+                "direction": "outbound",
+                "state": "queued",
+                "message_id": envelope["message_id"],
+                "request": pull_request,
+                "response": None,
+                "updated_at": int(time.time()),
+            },
+        )
+        outbox = self._queue_envelope(
+            alias,
+            envelope,
+            request_id=request_id,
+            exchange_direction="outbound",
+        )
+        return {
+            "queued": True,
+            "request_id": request_id,
+            "message_id": envelope["message_id"],
+            "recipient": recipient,
+            "purpose": pull_request["purpose"],
+            "question": pull_request["question"],
+            "selectors": pull_request["selectors"],
+            "since_revision": pull_request["since_revision"],
+            "expires_at": pull_request["expires_at"],
+            "outbox": str(outbox),
+        }
+
+    def requests(self, alias: str) -> dict[str, Any]:
+        """Return a bounded, assertion-free view of local pull-request state."""
+        records: list[dict[str, Any]] = []
+        base = self.home / "team-exchanges" / _safe_alias(alias)
+        for direction in ("inbound", "outbound"):
+            folder = base / direction
+            paths = sorted(
+                folder.glob("*.json"),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )[:100]
+            for path in paths:
+                state = bridge.load_protected_json(path)
+                pull_request = state.get("request")
+                if not isinstance(pull_request, Mapping):
+                    raise ConnectorError(
+                        f"Invalid Context Pull Request state: {path.name}"
+                    )
+                try:
+                    verified = exchange.verify_request(pull_request, allow_expired=True)
+                except exchange.ContextExchangeError as error:
+                    raise ConnectorError(
+                        f"Invalid Context Pull Request state: {path.name}"
+                    ) from error
+                response = state.get("response")
+                response_view = None
+                if isinstance(response, Mapping):
+                    response_view = {
+                        key: response.get(key)
+                        for key in (
+                            "response_id",
+                            "request_sha256",
+                            "status",
+                            "note",
+                            "created_at",
+                            "expires_at",
+                        )
+                    }
+                records.append(
+                    {
+                        "direction": direction,
+                        "state": state.get("state"),
+                        "request_id": verified["request_id"],
+                        "peer": (
+                            verified["sender"]
+                            if direction == "inbound"
+                            else verified["recipient"]
+                        ),
+                        "purpose": verified["purpose"],
+                        "question": verified["question"],
+                        "selectors": verified["selectors"],
+                        "since_revision": verified["since_revision"],
+                        "max_sensitivity": verified["max_sensitivity"],
+                        "max_claims": verified["max_claims"],
+                        "max_bytes": verified["max_bytes"],
+                        "created_at": verified["created_at"],
+                        "expires_at": verified["expires_at"],
+                        "response": response_view,
+                    }
+                )
+        return {
+            "project": alias,
+            "requests": sorted(
+                records,
+                key=lambda item: (int(item["created_at"]), item["request_id"]),
+                reverse=True,
+            ),
         }
 
     def publish_head(
@@ -952,6 +1236,242 @@ class TeamConnector:
                 self.save_config(alias, config)
             return {"revision": revision, "queued": queued, "skipped": skipped}
 
+    @staticmethod
+    def _requested_claim_ids(
+        ledger: ContextLedger, pull_request: Mapping[str, Any]
+    ) -> tuple[str, list[str], bool]:
+        heads = ledger.status()["heads"]
+        if not heads:
+            return "", [], False
+        if len(heads) != 1:
+            raise ConnectorError(
+                "Ledger has divergent heads; reconcile them before answering a pull request."
+            )
+        head = str(heads[0])
+        active = {
+            str(claim["id"]): claim for claim in ledger.freshness()["active_claims"]
+        }
+        candidates = set(active)
+        removed: list[Mapping[str, Any]] = []
+        since_revision = pull_request.get("since_revision")
+        if since_revision is not None:
+            try:
+                delta = ledger.diff(str(since_revision), head)
+            except ValueError as error:
+                raise ConnectorError(
+                    "The requested since-revision is not available in this ledger; "
+                    "respond with needs-clarification instead of sending a full snapshot."
+                ) from error
+            candidates = {str(claim["id"]) for claim in delta["added"]} | {
+                str(change["after"]["id"]) for change in delta["changed"]
+            }
+            removed = delta["removed"]
+        selectors = pull_request["selectors"]
+        kinds = set(selectors["kinds"])
+        semantic_keys = set(selectors["semantic_keys"])
+        labels = set(selectors["labels"])
+        sensitivity_order = {
+            "public": 0,
+            "internal": 1,
+            "confidential": 2,
+            "restricted": 3,
+        }
+        ceiling = sensitivity_order[str(pull_request["max_sensitivity"])]
+
+        def matches(claim: Mapping[str, Any]) -> bool:
+            return (
+                (not kinds or claim.get("kind") in kinds)
+                and (not semantic_keys or claim.get("semantic_key") in semantic_keys)
+                and (not labels or labels.intersection(claim.get("labels", [])))
+                and sensitivity_order[claim.get("sensitivity", "internal")] <= ceiling
+            )
+
+        has_lifecycle_removal = any(matches(claim) for claim in removed)
+        selected = [
+            active[claim_id]
+            for claim_id in candidates
+            if claim_id in active and matches(active[claim_id])
+        ]
+        priority = {
+            "blocker": 0,
+            "decision": 1,
+            "constraint": 2,
+            "action": 3,
+            "disagreement": 4,
+            "fact": 5,
+            "question": 6,
+            "hypothesis": 7,
+        }
+        selected.sort(key=lambda claim: str(claim["id"]))
+        selected.sort(key=lambda claim: str(claim.get("observed_at", "")), reverse=True)
+        selected.sort(key=lambda claim: priority.get(str(claim["kind"]), 99))
+        chosen: list[str] = []
+        # The signed ceiling is measured over the canonical claims array, not
+        # the sum of independently encoded objects. Account for ``[]`` and the
+        # comma separators exactly as requester-side verification does.
+        used = 2
+        for claim in selected:
+            encoded = len(canonical_context_json(claim)) + (1 if chosen else 0)
+            if len(chosen) >= int(pull_request["max_claims"]):
+                break
+            if used + encoded > int(pull_request["max_bytes"]):
+                continue
+            chosen.append(str(claim["id"]))
+            used += encoded
+        return head, chosen, has_lifecycle_removal
+
+    def respond(
+        self,
+        alias: str,
+        ledger_project: str,
+        request_id: str,
+        *,
+        status: str = "fulfilled",
+        note: str = "",
+    ) -> dict[str, Any]:
+        """Answer one authenticated pull request with a minimized Context Pack."""
+        if status not in exchange.RESPONSE_STATUSES:
+            raise ConnectorError("Context Pull Response status is invalid.")
+        with _file_lock(self.lock_path(alias)):
+            config = self.load_config(alias)
+            state_path = self.exchange_state_path(alias, "inbound", request_id)
+            if not state_path.exists():
+                raise ConnectorError("Inbound Context Pull Request was not found.")
+            state = bridge.load_protected_json(state_path)
+            if state.get("state") != "open":
+                raise ConnectorError(
+                    "Context Pull Request already has a final response."
+                )
+            pull_request = state.get("request")
+            if not isinstance(pull_request, Mapping):
+                raise ConnectorError("Inbound Context Pull Request state is invalid.")
+            try:
+                verified_request = exchange.verify_request(
+                    pull_request,
+                    expected_project=str(config["project_id"]),
+                    expected_recipient=str(config["principal"]),
+                )
+            except exchange.ContextExchangeError as error:
+                raise ConnectorError(str(error)) from error
+            peer = self._trusted_endpoint(alias, str(verified_request["sender"]))
+            bundle: Mapping[str, Any] | None = None
+            selected_claims: list[str] = []
+            head = ""
+            effective_status = status
+            effective_note = note
+            if status == "fulfilled":
+                ledger = ContextLedger(ledger_project, self.home)
+                head, selected_claims, has_lifecycle_removal = (
+                    self._requested_claim_ids(ledger, verified_request)
+                )
+                if has_lifecycle_removal:
+                    effective_status = "needs-clarification"
+                    effective_note = note or (
+                        "Matching lifecycle removals cannot be represented by Context "
+                        "Pull Request v1; send a reviewed checkpoint instead."
+                    )
+                    selected_claims = []
+                elif not selected_claims:
+                    effective_status = "no-change"
+                    effective_note = note or "No matching active context change."
+                else:
+                    disclosure = ledger.disclose(
+                        str(verified_request["sender"]),
+                        head,
+                        claim_ids=selected_claims,
+                        purpose=str(verified_request["purpose"]),
+                        max_sensitivity=str(verified_request["max_sensitivity"]),
+                    )
+                    bundle = disclosure["bundle"]
+            identity = load_or_create_identity(self.identity_path)
+            try:
+                response = exchange.create_response(
+                    identity,
+                    verified_request,
+                    status=effective_status,
+                    bundle=bundle,
+                    note=effective_note,
+                )
+            except exchange.ContextExchangeError as error:
+                raise ConnectorError(str(error)) from error
+            mailbox_public = _b64d(peer.get("mailbox_public_key"), 64)
+            envelope = seal_mailbox_payload(
+                response,
+                kind="coordination-note",
+                project_id=str(config["project_id"]),
+                sender=str(config["principal"]),
+                recipient=str(verified_request["sender"]),
+                recipient_mailbox_key=mailbox_public,
+                ttl_seconds=max(1, int(response["expires_at"]) - int(time.time())),
+                inner_expires_at=int(response["expires_at"]),
+            )
+            outbox = self._queue_envelope(
+                alias,
+                envelope,
+                request_id=str(verified_request["request_id"]),
+                exchange_direction="inbound",
+            )
+            state["state"] = "response-queued"
+            state["response"] = response
+            state["response_message_id"] = envelope["message_id"]
+            state["updated_at"] = int(time.time())
+            bridge.save_protected_json(state_path, state)
+        return {
+            "request_id": verified_request["request_id"],
+            "response_id": response["response_id"],
+            "status": response["status"],
+            "recipient": response["recipient"],
+            "source_revision": head or None,
+            "claim_ids": selected_claims,
+            "message_id": envelope["message_id"],
+            "outbox": str(outbox),
+        }
+
+    def _mark_exchange_sent(self, alias: str, record: Mapping[str, Any]) -> None:
+        request_id = record.get("request_id")
+        direction = record.get("exchange_direction")
+        if not isinstance(request_id, str) or direction not in {"inbound", "outbound"}:
+            return
+        state_path = self.exchange_state_path(alias, str(direction), request_id)
+        if not state_path.exists():
+            raise ConnectorError("Context Pull Request state disappeared before send.")
+        state = bridge.load_protected_json(state_path)
+        state["state"] = "responded" if direction == "inbound" else "sent"
+        state["updated_at"] = int(time.time())
+        bridge.save_protected_json(state_path, state)
+
+    def _dead_letter(
+        self, alias: str, path: Path, record: dict[str, Any], reason: str
+    ) -> None:
+        """Retire a permanently-undeliverable outbox entry so it cannot wedge the drain."""
+        dead = self.home / "team-deadletter" / _safe_alias(alias)
+        retired_at = int(time.time())
+        dead.mkdir(parents=True, exist_ok=True)
+        # Persist the complete protected record before removing the retry copy.
+        # If this write fails, the exception propagates and the outbox survives.
+        bridge.save_protected_json(
+            dead / path.name,
+            {
+                "outbox_record": record,
+                "reason": reason,
+                "retired_at": retired_at,
+            },
+        )
+        request_id = record.get("request_id")
+        direction = record.get("exchange_direction")
+        if isinstance(request_id, str) and direction in {"inbound", "outbound"}:
+            state_path = self.exchange_state_path(alias, str(direction), request_id)
+            if state_path.exists():
+                state = bridge.load_protected_json(state_path)
+                state["state"] = "delivery-failed"
+                state["delivery_failure"] = {
+                    "reason": reason[:500],
+                    "retired_at": retired_at,
+                }
+                state["updated_at"] = retired_at
+                bridge.save_protected_json(state_path, state)
+        path.unlink(missing_ok=True)
+
     def flush(self, alias: str) -> list[dict[str, Any]]:
         config = self.load_config(alias)
         outbox = self.home / "team-outbox" / _safe_alias(alias)
@@ -960,15 +1480,29 @@ class TeamConnector:
             record = bridge.load_protected_json(path)
             envelope = record.get("envelope")
             if not isinstance(envelope, dict):
-                raise ConnectorError(f"Invalid outbox entry: {path.name}")
-            result = self.client(config).authenticated(
-                "/v1/mailbox/push",
-                {"envelope": envelope},
-                self.identity_path,
-            )
+                self._dead_letter(alias, path, record, "Outbox entry is malformed.")
+                continue
+            try:
+                result = self.client(config).authenticated(
+                    "/v1/mailbox/push",
+                    {"envelope": envelope},
+                    self.identity_path,
+                )
+            except PermanentRejectionError as failure:
+                # A definitive, permanent rejection (expired envelope, recipient
+                # left the project, message-id conflict): retire the entry so one
+                # stuck message cannot permanently block all future send AND
+                # receive.
+                self._dead_letter(alias, path, record, str(failure))
+                continue
+            # Transient failures AND ambiguous outcomes (unverifiable/mismatched
+            # response, redirect, network) propagate so the next sync retries in
+            # order; push is idempotent (the hub dedups by message-id), so a
+            # maybe-delivered message is never silently discarded.
             if result.get("message_id") != envelope.get("message_id"):
                 raise ConnectorError("Team Hub acknowledged another message.")
-            path.unlink()
+            self._mark_exchange_sent(alias, record)
+            path.unlink(missing_ok=True)
             results.append(result)
         return results
 
@@ -1024,6 +1558,187 @@ class TeamConnector:
             },
         )
 
+    def _store_inbound_request(
+        self,
+        alias: str,
+        config: Mapping[str, Any],
+        payload: Mapping[str, Any],
+        message_id: str,
+    ) -> dict[str, Any]:
+        try:
+            pull_request = exchange.verify_request(
+                payload,
+                expected_project=str(config["project_id"]),
+                expected_recipient=str(config["principal"]),
+            )
+        except exchange.ContextExchangeError as error:
+            raise ConnectorError(str(error)) from error
+        request_id = str(pull_request["request_id"])
+        state_path = self.exchange_state_path(alias, "inbound", request_id)
+        if state_path.exists():
+            existing = bridge.load_protected_json(state_path)
+            recorded = existing.get("request")
+            if not isinstance(recorded, Mapping) or exchange.exchange_digest(
+                recorded
+            ) != exchange.exchange_digest(pull_request):
+                raise ConnectorError(
+                    "Context Pull Request ID is bound to different content."
+                )
+            duplicate = True
+        else:
+            bridge.save_protected_json(
+                state_path,
+                {
+                    "format": "context-pull-state/v1",
+                    "direction": "inbound",
+                    "state": "open",
+                    "message_id": message_id,
+                    "request": pull_request,
+                    "response": None,
+                    "updated_at": int(time.time()),
+                },
+            )
+            duplicate = False
+        return {
+            "message_id": message_id,
+            "request_id": request_id,
+            "sender": pull_request["sender"],
+            "purpose": pull_request["purpose"],
+            "question": pull_request["question"],
+            "selectors": pull_request["selectors"],
+            "since_revision": pull_request["since_revision"],
+            "expires_at": pull_request["expires_at"],
+            "duplicate": duplicate,
+        }
+
+    @staticmethod
+    def _validate_response_claims(
+        response: Mapping[str, Any], pull_request: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        bundle = response.get("bundle")
+        if not isinstance(bundle, dict):
+            raise ConnectorError(
+                "Fulfilled Context Pull Response lacks a Context Pack."
+            )
+        try:
+            metadata = bridge.validate_disclosure_bundle(
+                bundle, str(pull_request["sender"])
+            )
+        except ValueError as error:
+            raise ConnectorError(str(error)) from error
+        # The endpoint identity signs its selection of this exact bundle digest;
+        # the Context Ledger author separately signs the Context Pack itself.
+        # They are deliberately distinct keys so connector compromise cannot
+        # impersonate ledger authorship.
+        revision = bundle["export"]["revision"]
+        if revision.get("scope", {}).get("purpose") != pull_request.get("purpose"):
+            raise ConnectorError(
+                "Context Pull Response purpose does not match the request."
+            )
+        claims = revision.get("claims")
+        if not isinstance(claims, list) or not claims:
+            raise ConnectorError("Fulfilled Context Pull Response has no claims.")
+        if len(claims) > int(pull_request["max_claims"]):
+            raise ConnectorError(
+                "Context Pull Response exceeds the requested claim limit."
+            )
+        if len(canonical_context_json(claims)) > int(pull_request["max_bytes"]):
+            raise ConnectorError(
+                "Context Pull Response exceeds the requested byte limit."
+            )
+        selectors = pull_request["selectors"]
+        kinds = set(selectors["kinds"])
+        semantic_keys = set(selectors["semantic_keys"])
+        labels = set(selectors["labels"])
+        sensitivity_order = {
+            "public": 0,
+            "internal": 1,
+            "confidential": 2,
+            "restricted": 3,
+        }
+        ceiling = sensitivity_order[str(pull_request["max_sensitivity"])]
+        for claim in claims:
+            if kinds and claim.get("kind") not in kinds:
+                raise ConnectorError(
+                    "Context Pull Response violates its kind selector."
+                )
+            if semantic_keys and claim.get("semantic_key") not in semantic_keys:
+                raise ConnectorError(
+                    "Context Pull Response violates its semantic-key selector."
+                )
+            if labels and not labels.intersection(claim.get("labels", [])):
+                raise ConnectorError(
+                    "Context Pull Response violates its label selector."
+                )
+            if sensitivity_order[claim.get("sensitivity", "internal")] > ceiling:
+                raise ConnectorError(
+                    "Context Pull Response exceeds the requested sensitivity."
+                )
+        return metadata
+
+    def _store_inbound_response(
+        self,
+        alias: str,
+        ledger_project: str,
+        config: Mapping[str, Any],
+        payload: Mapping[str, Any],
+        message_id: str,
+    ) -> dict[str, Any]:
+        request_id = payload.get("request_id")
+        if not isinstance(request_id, str):
+            raise ConnectorError("Context Pull Response request ID is invalid.")
+        state_path = self.exchange_state_path(alias, "outbound", request_id)
+        if not state_path.exists():
+            raise ConnectorError("Unsolicited Context Pull Response was rejected.")
+        state = bridge.load_protected_json(state_path)
+        pull_request = state.get("request")
+        if not isinstance(pull_request, Mapping):
+            raise ConnectorError("Outbound Context Pull Request state is invalid.")
+        try:
+            response = exchange.verify_response(
+                payload,
+                request=pull_request,
+                expected_project=str(config["project_id"]),
+                expected_recipient=str(config["principal"]),
+            )
+        except exchange.ContextExchangeError as error:
+            raise ConnectorError(str(error)) from error
+        existing = state.get("response")
+        if isinstance(existing, Mapping):
+            if exchange.exchange_digest(existing) != exchange.exchange_digest(response):
+                raise ConnectorError(
+                    "Context Pull Request already has a different final response."
+                )
+            return {
+                "message_id": message_id,
+                "request_id": request_id,
+                "response_id": response["response_id"],
+                "status": response["status"],
+                "quarantine_token": state.get("quarantine_token"),
+                "duplicate": True,
+            }
+        token = None
+        if response["status"] == "fulfilled":
+            self._validate_response_claims(response, pull_request)
+            token = self._quarantine_bundle(
+                alias, ledger_project, message_id, response["bundle"]
+            )
+        state["state"] = "response-received"
+        state["response"] = response
+        state["response_message_id"] = message_id
+        state["quarantine_token"] = token
+        state["updated_at"] = int(time.time())
+        bridge.save_protected_json(state_path, state)
+        return {
+            "message_id": message_id,
+            "request_id": request_id,
+            "response_id": response["response_id"],
+            "status": response["status"],
+            "note": response["note"],
+            "quarantine_token": token,
+            "duplicate": False,
+        }
+
     def pull(self, alias: str, ledger_project: str) -> dict[str, Any]:
         config = self.load_config(alias)
         client = self.client(config)
@@ -1035,7 +1750,10 @@ class TeamConnector:
         }
         cursor = int(config["cursor"])
         quarantined: list[dict[str, Any]] = []
+        pull_requests: list[dict[str, Any]] = []
+        pull_responses: list[dict[str, Any]] = []
         rejected: list[dict[str, Any]] = []
+        truncated = False
         for _ in range(MAX_SYNC_PAGES):
             page = client.authenticated(
                 "/v1/mailbox/pull",
@@ -1066,22 +1784,69 @@ class TeamConnector:
                         raise ConnectorError(
                             "Mailbox envelope sender is not locally trusted."
                         )
-                    bundle = open_context_pack(
-                        envelope,
-                        mailbox_identity=self.mailbox_identity,
-                        expected_project=str(config["project_id"]),
-                        expected_recipient=str(config["principal"]),
-                    )
-                    token = self._quarantine_bundle(
-                        alias, ledger_project, message_id, bundle
-                    )
-                    quarantined.append(
-                        {
-                            "message_id": message_id,
-                            "sequence": sequence,
-                            "quarantine_token": token,
-                        }
-                    )
+                    kind = envelope.get("kind")
+                    if kind == "context-pack":
+                        bundle = open_context_pack(
+                            envelope,
+                            mailbox_identity=self.mailbox_identity,
+                            expected_project=str(config["project_id"]),
+                            expected_recipient=str(config["principal"]),
+                        )
+                        token = self._quarantine_bundle(
+                            alias, ledger_project, message_id, bundle
+                        )
+                        quarantined.append(
+                            {
+                                "message_id": message_id,
+                                "sequence": sequence,
+                                "quarantine_token": token,
+                            }
+                        )
+                    elif kind == "coordination-note":
+                        payload = open_mailbox_payload(
+                            envelope,
+                            mailbox_identity=self.mailbox_identity,
+                            expected_project=str(config["project_id"]),
+                            expected_recipient=str(config["principal"]),
+                            expected_kind="coordination-note",
+                        )
+                        if payload.get("format") == exchange.REQUEST_FORMAT:
+                            if payload.get("sender") != envelope.get("sender"):
+                                raise ConnectorError(
+                                    "Context Pull Request sender does not match envelope."
+                                )
+                            received_request = self._store_inbound_request(
+                                alias, config, payload, message_id
+                            )
+                            received_request["sequence"] = sequence
+                            pull_requests.append(received_request)
+                        elif payload.get("format") == exchange.RESPONSE_FORMAT:
+                            if payload.get("sender") != envelope.get("sender"):
+                                raise ConnectorError(
+                                    "Context Pull Response sender does not match envelope."
+                                )
+                            received_response = self._store_inbound_response(
+                                alias, ledger_project, config, payload, message_id
+                            )
+                            received_response["sequence"] = sequence
+                            pull_responses.append(received_response)
+                            if received_response.get("quarantine_token"):
+                                quarantined.append(
+                                    {
+                                        "message_id": message_id,
+                                        "sequence": sequence,
+                                        "quarantine_token": received_response[
+                                            "quarantine_token"
+                                        ],
+                                        "request_id": received_response["request_id"],
+                                    }
+                                )
+                        else:
+                            raise ConnectorError(
+                                "Unsupported encrypted coordination payload."
+                            )
+                    else:
+                        raise ConnectorError("Unsupported mailbox envelope kind.")
                 except (ConnectorError, ValueError) as failure:
                     self._record_rejection(alias, sequence, envelope, str(failure))
                     rejected.append(
@@ -1105,12 +1870,18 @@ class TeamConnector:
             if not page.get("has_more"):
                 break
         else:
-            raise ConnectorError("Team Hub sync page limit was exceeded.")
+            # Hit the per-sync page cap. The cursor is persisted after every
+            # message, so treat a large backlog as backpressure (resume on the
+            # next sync) rather than a fatal error that would crash the run loop.
+            truncated = True
         return {
             "project": alias,
             "cursor": cursor,
             "quarantined": quarantined,
+            "requests": pull_requests,
+            "responses": pull_responses,
             "rejected": rejected,
+            "truncated": truncated,
         }
 
     def sync(self, alias: str, ledger_project: str) -> dict[str, Any]:
@@ -1129,6 +1900,17 @@ def _read_code(args: argparse.Namespace) -> str:
     if not sys.stdin.isatty():
         return sys.stdin.readline().strip()
     raise ConnectorError("Provide the enrollment code with --code-file or stdin.")
+
+
+def _read_question(args: argparse.Namespace) -> str:
+    if args.question_file:
+        path = Path(args.question_file).expanduser()
+        if path.stat().st_size > exchange.MAX_QUESTION_CHARS * 4:
+            raise ConnectorError("Context Pull Request question file is too large.")
+        return path.read_text(encoding="utf-8").strip()
+    if not sys.stdin.isatty():
+        return sys.stdin.read(exchange.MAX_QUESTION_CHARS + 1).strip()
+    raise ConnectorError("Provide the question with --question-file or stdin.")
 
 
 def _print(value: Mapping[str, Any]) -> None:
@@ -1153,6 +1935,41 @@ def command_trust(args: argparse.Namespace) -> None:
 
 def command_untrust(args: argparse.Namespace) -> None:
     _print(TeamConnector(args.home).untrust(args.project, args.principal))
+
+
+def command_request(args: argparse.Namespace) -> None:
+    _print(
+        TeamConnector(args.home).queue_request(
+            args.project,
+            recipient=args.to,
+            purpose=args.purpose,
+            question=_read_question(args),
+            kinds=args.kind,
+            semantic_keys=args.semantic_key,
+            labels=args.label,
+            since_revision=args.since_revision,
+            max_sensitivity=args.max_sensitivity,
+            max_claims=args.max_claims,
+            max_bytes=args.max_bytes,
+            ttl_seconds=args.ttl_seconds,
+        )
+    )
+
+
+def command_requests(args: argparse.Namespace) -> None:
+    _print(TeamConnector(args.home).requests(args.project))
+
+
+def command_respond(args: argparse.Namespace) -> None:
+    _print(
+        TeamConnector(args.home).respond(
+            args.project,
+            args.ledger_project,
+            args.request_id,
+            status=args.status,
+            note=args.note,
+        )
+    )
 
 
 def command_queue(args: argparse.Namespace) -> None:
@@ -1255,7 +2072,7 @@ def command_run(args: argparse.Namespace) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--home", type=Path, help="Endpoint Session Bridge state root.")
-    parser.add_argument("--version", action="version", version="%(prog)s 0.4.0")
+    parser.add_argument("--version", action="version", version="%(prog)s 0.5.0")
     commands = parser.add_subparsers(dest="command", required=True)
 
     enroll = commands.add_parser(
@@ -1292,6 +2109,52 @@ def build_parser() -> argparse.ArgumentParser:
     untrust.add_argument("--principal", required=True)
     untrust.set_defaults(handler=command_untrust)
 
+    pull_request = commands.add_parser(
+        "request",
+        help="Queue a signed request for a bounded semantic context change.",
+    )
+    pull_request.add_argument("--project", required=True)
+    pull_request.add_argument("--to", required=True, help="Trusted endpoint principal.")
+    pull_request.add_argument("--purpose", required=True)
+    pull_request.add_argument("--question-file")
+    pull_request.add_argument(
+        "--kind", action="append", choices=sorted(exchange.CLAIM_KINDS), default=[]
+    )
+    pull_request.add_argument("--semantic-key", action="append", default=[])
+    pull_request.add_argument("--label", action="append", default=[])
+    pull_request.add_argument("--since-revision")
+    pull_request.add_argument(
+        "--max-sensitivity",
+        choices=("public", "internal", "confidential", "restricted"),
+        default="internal",
+    )
+    pull_request.add_argument("--max-claims", type=int, default=50)
+    pull_request.add_argument("--max-bytes", type=int, default=250_000)
+    pull_request.add_argument(
+        "--ttl-seconds", type=int, default=hub.DEFAULT_MESSAGE_TTL_SECONDS
+    )
+    pull_request.set_defaults(handler=command_request)
+
+    requests = commands.add_parser(
+        "requests", help="List inbound and outbound Context Pull Requests."
+    )
+    requests.add_argument("--project", required=True)
+    requests.set_defaults(handler=command_requests)
+
+    respond = commands.add_parser(
+        "respond", help="Answer one Context Pull Request without expanding its scope."
+    )
+    respond.add_argument("--project", required=True)
+    respond.add_argument("--ledger-project", required=True)
+    respond.add_argument("--request-id", required=True)
+    respond.add_argument(
+        "--status",
+        choices=sorted(exchange.RESPONSE_STATUSES),
+        default="fulfilled",
+    )
+    respond.add_argument("--note", default="")
+    respond.set_defaults(handler=command_respond)
+
     queue = commands.add_parser(
         "queue",
         help="Encrypt an approved recipient-bound Context Pack into the outbox.",
@@ -1322,7 +2185,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sync = commands.add_parser(
         "sync",
-        help="Flush the outbox and quarantine all available inbound Context Packs.",
+        help="Flush the outbox, receive requests, and quarantine Context Pack responses.",
     )
     sync.add_argument("--project", required=True)
     sync.add_argument("--ledger-project", required=True)

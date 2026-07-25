@@ -199,6 +199,35 @@ class NetworkBridgeTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             bridge.open_keychain_secret(tampered, "macos-keychain", key)
 
+    def test_macos_keychain_store_keeps_secret_off_argv(self) -> None:
+        missing = mock.Mock(returncode=44, stdout="", stderr="missing")
+        stored = mock.Mock(returncode=0, stdout="", stderr="")
+        bridge._LOCAL_KEY_BACKEND = ""
+        bridge._LOCAL_MASTER_KEY = None
+        try:
+            with (
+                mock.patch.object(
+                    bridge, "keychain_backend", return_value="macos-keychain"
+                ),
+                mock.patch.object(bridge.getpass, "getuser", return_value="alice"),
+                mock.patch.object(
+                    bridge.secrets, "token_bytes", return_value=b"k" * 32
+                ),
+                mock.patch.object(
+                    bridge.subprocess, "run", side_effect=[missing, stored]
+                ) as run,
+            ):
+                backend, key = bridge.keychain_master_key(True)
+            self.assertEqual((backend, key), ("macos-keychain", b"k" * 32))
+            store_call = run.call_args_list[1]
+            self.assertEqual(store_call.args[0], ["security", "-i"])
+            encoded = bridge.b64e(b"k" * 32)
+            self.assertNotIn(encoded, " ".join(store_call.args[0]))
+            self.assertIn(f"-w {encoded}", store_call.kwargs["input"])
+        finally:
+            bridge._LOCAL_KEY_BACKEND = ""
+            bridge._LOCAL_MASTER_KEY = None
+
     def test_shared_session_redacts_identifiers_and_paths(self) -> None:
         shared = bridge.shareable_session(FakeSession())
         serialized = json.dumps(shared)

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "session-bridge"
-version = "0.4.0"
+version = "0.5.0"
 description = "Governed context synchronization for existing Claude Code and Codex sessions"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -37,6 +37,7 @@ braid-mcp = "context_mcp:main"
 package-dir = {"" = "scripts"}
 py-modules = [
   "session_bridge", "network_bridge", "context_adapters", "context_bridge",
+  "context_exchange",
   "context_extract", "context_mcp", "context_model", "context_policy",
   "context_security", "context_store",
   "team_hub",

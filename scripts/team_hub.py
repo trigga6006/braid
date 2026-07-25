@@ -53,6 +53,13 @@ MAX_PROJECT_ENDPOINTS = 1_000
 MAX_ACTIVE_ENROLLMENTS = 1_000
 MAX_PENDING_MESSAGES = 10_000
 MAX_PENDING_BYTES = 256 * 1024 * 1024
+# Per-(recipient, sender) sub-quota so one member cannot fill a peer's whole
+# mailbox and deny delivery to every other sender.
+MAX_PENDING_PER_SENDER_MESSAGES = 2_000
+MAX_PENDING_PER_SENDER_BYTES = 64 * 1024 * 1024
+# Hard ceiling on total time a single connection may occupy a worker thread,
+# so a slow/dribbling (slowloris) client cannot pin a worker slot indefinitely.
+CONNECTION_DEADLINE_SECONDS = 30
 RECEIPT_RETENTION_SECONDS = 30 * 24 * 3600
 IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 NONCE = re.compile(r"^[0-9a-f]{32}$")
@@ -761,9 +768,13 @@ class HubStore:
                 raise HubError(403, "endpoint_not_active", "Endpoint is not active.")
             if endpoint["signing_public_key"] != signing_public_key:
                 raise HubError(401, "identity_key_mismatch", "Endpoint key mismatch.")
+            # Retain nonces for the full width the timestamp check can accept
+            # (a client clock up to REQUEST_WINDOW_SECONDS ahead is admitted, so
+            # a nonce must survive that long past its used_at or a replay could
+            # slip through after eviction).
             connection.execute(
                 "DELETE FROM request_nonces WHERE used_at < ?",
-                (now - REQUEST_WINDOW_SECONDS,),
+                (now - 2 * REQUEST_WINDOW_SECONDS,),
             )
             try:
                 connection.execute(
@@ -916,6 +927,23 @@ class HubStore:
                     429,
                     "mailbox_capacity_exceeded",
                     "Recipient mailbox capacity has been reached.",
+                )
+            per_sender = connection.execute(
+                """SELECT COUNT(*) AS count, COALESCE(SUM(LENGTH(envelope)), 0) AS bytes
+                   FROM messages
+                   WHERE project_id = ? AND recipient = ? AND sender = ?
+                     AND state = 'pending'""",
+                (envelope["project_id"], envelope["recipient"], principal),
+            ).fetchone()
+            if (
+                int(per_sender["count"]) >= MAX_PENDING_PER_SENDER_MESSAGES
+                or int(per_sender["bytes"]) + len(serialized)
+                > MAX_PENDING_PER_SENDER_BYTES
+            ):
+                raise HubError(
+                    429,
+                    "sender_quota_exceeded",
+                    "Per-sender mailbox quota for this recipient has been reached.",
                 )
             connection.execute(
                 """INSERT INTO messages(
@@ -1147,7 +1175,7 @@ class HubStore:
             expired = self._expire_messages(connection, now)
             nonce_count = connection.execute(
                 "DELETE FROM request_nonces WHERE used_at < ?",
-                (now - REQUEST_WINDOW_SECONDS,),
+                (now - 2 * REQUEST_WINDOW_SECONDS,),
             ).rowcount
             enrollment_count = connection.execute(
                 "DELETE FROM enrollments WHERE expires_at < ? AND used_at IS NULL",
@@ -1252,6 +1280,28 @@ class HubHandler(BaseHTTPRequestHandler):
     def store(self) -> HubStore:
         return self.server.store  # type: ignore[attr-defined]
 
+    def setup(self) -> None:
+        super().setup()
+        # Hard total-connection deadline so a slow/dribbling client cannot hold a
+        # worker slot past the per-recv timeout by trickling one byte at a time.
+        self._deadline = threading.Timer(
+            CONNECTION_DEADLINE_SECONDS, self._force_close
+        )
+        self._deadline.daemon = True
+        self._deadline.start()
+
+    def finish(self) -> None:
+        deadline = getattr(self, "_deadline", None)
+        if deadline is not None:
+            deadline.cancel()
+        super().finish()
+
+    def _force_close(self) -> None:
+        try:
+            self.connection.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
     def log_message(self, format: str, *args: Any) -> None:
         # Never log bodies or authentication objects.
         sys.stderr.write(
@@ -1266,6 +1316,11 @@ class HubHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(raw)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        # Close after every response: one request per connection releases the
+        # worker slot promptly and discards any undrained body, preventing a
+        # keep-alive request-smuggling/desync behind a pooling reverse proxy.
+        self.send_header("Connection", "close")
+        self.close_connection = True
         self.end_headers()
         self.wfile.write(raw)
 
@@ -1288,9 +1343,22 @@ class HubHandler(BaseHTTPRequestHandler):
             return
         self._send(404, {"error": {"code": "not_found", "message": "Not found."}})
 
+    def _client_ip(self) -> str:
+        raw = str(self.client_address[0])
+        # Behind the documented reverse proxy every request shares the proxy IP,
+        # collapsing per-IP limits into one global bucket.  Only when explicitly
+        # told the proxy is trusted, key on the forwarded client address instead.
+        if os.environ.get("SESSION_BRIDGE_HUB_TRUSTED_PROXY") == "1":
+            forwarded = self.headers.get("X-Forwarded-For", "")
+            candidate = forwarded.split(",")[0].strip()
+            if candidate:
+                return candidate[:64]
+        return raw
+
     def do_POST(self) -> None:  # noqa: N802
+        response_nonce: str | None = None
         try:
-            client_key = f"ip:{self.client_address[0]}"
+            client_key = f"ip:{self._client_ip()}"
             if not self.server.rate_limiter.allow(client_key, 240, 60):  # type: ignore[attr-defined]
                 raise HubError(429, "rate_limited", "Too many requests.")
             content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip()
@@ -1303,12 +1371,12 @@ class HubHandler(BaseHTTPRequestHandler):
             length_text = self.headers.get("Content-Length")
             if length_text is None:
                 raise HubError(411, "length_required", "Content-Length is required.")
-            try:
-                length = int(length_text)
-            except ValueError as error:
-                raise HubError(
-                    400, "invalid_length", "Invalid Content-Length."
-                ) from error
+            # Reject non-canonical values (int() accepts "1_000", "+10", " 10 ")
+            # a strict fronting proxy would parse differently, avoiding a
+            # request-length disagreement.
+            if not re.fullmatch(r"[0-9]+", length_text):
+                raise HubError(400, "invalid_length", "Invalid Content-Length.")
+            length = int(length_text)
             if length < 0 or length > MAX_HTTP_BODY:
                 raise HubError(413, "request_too_large", "Request body is too large.")
             request = _json_loads(self.rfile.read(length))
@@ -1331,7 +1399,14 @@ class HubHandler(BaseHTTPRequestHandler):
             operation = routes.get(self.path)
             if operation is None:
                 raise HubError(404, "not_found", "Not found.")
+            if isinstance(request, Mapping):
+                auth = request.get("auth")
+                if isinstance(auth, Mapping):
+                    candidate = auth.get("nonce")
+                    if isinstance(candidate, str) and NONCE.fullmatch(candidate):
+                        response_nonce = candidate
             principal, body, nonce = self.store.authenticate(self.path, request)
+            response_nonce = nonce
             if not self.server.rate_limiter.allow(  # type: ignore[attr-defined]
                 f"principal:{principal}", 300, 60
             ):
@@ -1339,7 +1414,17 @@ class HubHandler(BaseHTTPRequestHandler):
             result = operation(principal, body)
             self._send(200, self.store.signed_response(self.path, nonce, result))
         except HubError as error:
-            self._error(error)
+            if response_nonce is None:
+                self._error(error)
+            else:
+                self._send(
+                    error.status,
+                    self.store.signed_response(
+                        self.path,
+                        response_nonce,
+                        {"error": {"code": error.code, "message": str(error)}},
+                    ),
+                )
         except (BrokenPipeError, ConnectionResetError):
             return
         except Exception as error:
@@ -1464,7 +1549,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--data-dir", type=Path, default=_default_data_dir(), help="Hub state root."
     )
-    parser.add_argument("--version", action="version", version="%(prog)s 0.4.0")
+    parser.add_argument("--version", action="version", version="%(prog)s 0.5.0")
     commands = parser.add_subparsers(dest="command", required=True)
 
     initialize = commands.add_parser("init", help="Create a team and project.")

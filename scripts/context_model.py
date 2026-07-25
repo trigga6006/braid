@@ -434,12 +434,28 @@ def resolved_active_view(
     for revision in _ordered(revisions):
         for claim in revision["claims"]:
             claims[claim["id"]] = copy.deepcopy(claim)
-    superseded = {
-        claim_id
+    # Supersession propagates transitively from every effectively-active claim
+    # through its supersedes edges (including via expired intermediates): a live
+    # claim makes its whole ancestor chain obsolete.  But an expired/dead
+    # override with no live successor is NOT a seed, so it cannot on its own keep
+    # hiding the still-true fact beneath it (which would drop the current fact).
+    live_seeds = [
+        claim
         for claim in claims.values()
-        if claim.get("status") == "active"
-        for claim_id in claim.get("supersedes", [])
-    }
+        if claim.get("status") == "active" and not _is_expired(claim, current)
+    ]
+    superseded: set[str] = set()
+    stack = [
+        target for claim in live_seeds for target in claim.get("supersedes", [])
+    ]
+    while stack:
+        target_id = stack.pop()
+        if target_id in superseded:
+            continue
+        superseded.add(target_id)
+        target = claims.get(target_id)
+        if target is not None:
+            stack.extend(target.get("supersedes", []))
     active, historical = [], []
     for claim in sorted(claims.values(), key=lambda item: item["id"]):
         item = copy.deepcopy(claim)

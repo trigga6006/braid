@@ -50,6 +50,56 @@ def committed_revision(ledger: ContextLedger) -> dict[str, object]:
     return ledger.commit("alice", stage_id=stage["stage_id"])
 
 
+def committed_blocker(ledger: ContextLedger) -> dict[str, object]:
+    stage = ledger.stage(
+        [
+            make_claim(
+                "claim-auth-blocker",
+                "blocker",
+                "The callback allowlist is missing the production origin.",
+                "auth-callback",
+                [
+                    {
+                        "type": "test_result",
+                        "uri": "test:auth-callback",
+                        "digest": "sha256:" + "b" * 64,
+                        "observed_at": "2026-07-22T01:00:00Z",
+                    }
+                ],
+                labels=["backend", "authentication"],
+                observed_at="2026-07-22T01:00:00Z",
+            )
+        ],
+        "new authentication blocker",
+    )
+    review = ledger.review_staged(stage["stage_id"])
+    ledger.approve_staged(stage["stage_id"], review["review_digest"])
+    return ledger.commit("bob", stage_id=stage["stage_id"])
+
+
+def committed_retraction(ledger: ContextLedger) -> dict[str, object]:
+    claim = make_claim(
+        "claim-team-sync",
+        "decision",
+        "Use the asynchronous Team Hub mailbox.",
+        "team-hub-transport",
+        [
+            {
+                "type": "test_result",
+                "uri": "test:team-connector-retraction",
+                "digest": "sha256:" + "c" * 64,
+                "observed_at": "2026-07-22T02:00:00Z",
+            }
+        ],
+        observed_at="2026-07-22T02:00:00Z",
+    )
+    claim["status"] = "retracted"
+    stage = ledger.stage([claim], "retract the earlier transport decision")
+    review = ledger.review_staged(stage["stage_id"])
+    ledger.approve_staged(stage["stage_id"], review["review_digest"])
+    return ledger.commit("bob", stage_id=stage["stage_id"])
+
+
 class ConnectorHarness:
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -150,6 +200,200 @@ class TeamConnectorTests(unittest.TestCase):
             finally:
                 harness.close()
 
+    def test_context_pull_request_returns_only_bounded_semantic_change(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            os.environ["SESSION_BRIDGE_HOME"] = str(root / "shared-security")
+            harness = ConnectorHarness(root)
+            try:
+                alice = harness.enroll("Alice", root / "alice")
+                bob = harness.enroll("Bob", root / "bob")
+                alice_config = alice.load_config("phoenix")
+                bob_config = bob.load_config("phoenix")
+                alice.trust("phoenix", str(bob_config["principal"]))
+                bob.trust("phoenix", str(alice_config["principal"]))
+
+                bob_ledger = ContextLedger("phoenix", root / "bob")
+                checkpoint = committed_revision(bob_ledger)
+                committed_blocker(bob_ledger)
+
+                queued = alice.queue_request(
+                    "phoenix",
+                    recipient=str(bob_config["principal"]),
+                    purpose="authentication handoff",
+                    question="Which authentication blockers changed?",
+                    kinds=["blocker"],
+                    labels=["backend"],
+                    since_revision=str(checkpoint["id"]),
+                    max_sensitivity="internal",
+                    max_claims=1,
+                    max_bytes=50_000,
+                )
+                alice.flush("phoenix")
+                received_by_bob = bob.sync("phoenix", "phoenix")
+                self.assertEqual(len(received_by_bob["requests"]), 1)
+                self.assertEqual(received_by_bob["quarantined"], [])
+                self.assertEqual(received_by_bob["rejected"], [])
+
+                listed = bob.requests("phoenix")["requests"]
+                inbound = next(
+                    item for item in listed if item["direction"] == "inbound"
+                )
+                self.assertEqual(inbound["state"], "open")
+                self.assertEqual(inbound["selectors"]["kinds"], ["blocker"])
+
+                response = bob.respond(
+                    "phoenix",
+                    "phoenix",
+                    str(queued["request_id"]),
+                )
+                self.assertEqual(response["status"], "fulfilled")
+                self.assertEqual(response["claim_ids"], ["claim-auth-blocker"])
+                with self.assertRaisesRegex(
+                    connector.ConnectorError, "already has a final response"
+                ):
+                    bob.respond(
+                        "phoenix",
+                        "phoenix",
+                        str(queued["request_id"]),
+                    )
+
+                bob.flush("phoenix")
+                received_by_alice = alice.sync("phoenix", "phoenix")
+                self.assertEqual(
+                    len(received_by_alice["responses"]), 1, received_by_alice
+                )
+                self.assertEqual(
+                    received_by_alice["responses"][0]["status"], "fulfilled"
+                )
+                self.assertEqual(len(received_by_alice["quarantined"]), 1)
+                self.assertEqual(received_by_alice["rejected"], [])
+
+                token = received_by_alice["quarantined"][0]["quarantine_token"]
+                review = ContextLedger("phoenix", root / "alice").review_import(token)
+                self.assertEqual(review["claim_count"], 1)
+                self.assertEqual(review["claims"][0]["id"], "claim-auth-blocker")
+                self.assertEqual(
+                    review["claims"][0]["statement"],
+                    "The callback allowlist is missing the production origin.",
+                )
+
+                outbound = next(
+                    item
+                    for item in alice.requests("phoenix")["requests"]
+                    if item["direction"] == "outbound"
+                )
+                self.assertEqual(outbound["state"], "response-received")
+                self.assertEqual(outbound["response"]["status"], "fulfilled")
+            finally:
+                harness.close()
+
+    def test_signed_context_pull_response_cannot_expand_request_selectors(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            os.environ["SESSION_BRIDGE_HOME"] = str(root / "shared-security")
+            harness = ConnectorHarness(root)
+            try:
+                alice = harness.enroll("Alice", root / "alice")
+                bob = harness.enroll("Bob", root / "bob")
+                alice_config = alice.load_config("phoenix")
+                bob_config = bob.load_config("phoenix")
+                alice.trust("phoenix", str(bob_config["principal"]))
+                bob.trust("phoenix", str(alice_config["principal"]))
+
+                bob_ledger = ContextLedger("phoenix", root / "bob")
+                decision_revision = committed_revision(bob_ledger)
+                queued = alice.queue_request(
+                    "phoenix",
+                    recipient=str(bob_config["principal"]),
+                    purpose="authentication handoff",
+                    question="Which authentication blockers changed?",
+                    kinds=["blocker"],
+                )
+                request_state = bridge.load_protected_json(
+                    alice.exchange_state_path(
+                        "phoenix", "outbound", str(queued["request_id"])
+                    )
+                )
+                out_of_scope = bob_ledger.disclose(
+                    str(alice_config["principal"]),
+                    str(decision_revision["id"]),
+                    claim_ids=["claim-team-sync"],
+                    purpose="authentication handoff",
+                )["bundle"]
+                response = connector.exchange.create_response(
+                    connector.load_or_create_identity(bob.identity_path),
+                    request_state["request"],
+                    status="fulfilled",
+                    bundle=out_of_scope,
+                )
+                peer = bob._trusted_endpoint("phoenix", str(alice_config["principal"]))
+                envelope = connector.seal_mailbox_payload(
+                    response,
+                    kind="coordination-note",
+                    project_id=str(bob_config["project_id"]),
+                    sender=str(bob_config["principal"]),
+                    recipient=str(alice_config["principal"]),
+                    recipient_mailbox_key=connector._b64d(
+                        peer["mailbox_public_key"], 64
+                    ),
+                    ttl_seconds=3600,
+                    inner_expires_at=int(response["expires_at"]),
+                )
+                bob._queue_envelope("phoenix", envelope)
+                bob.flush("phoenix")
+
+                received = alice.sync("phoenix", "phoenix")
+                self.assertEqual(received["responses"], [])
+                self.assertEqual(received["quarantined"], [])
+                self.assertEqual(len(received["rejected"]), 1)
+                self.assertIn("kind selector", received["rejected"][0]["reason"])
+            finally:
+                harness.close()
+
+    def test_lifecycle_removal_requests_clarification_instead_of_partial_delta(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            os.environ["SESSION_BRIDGE_HOME"] = str(root / "shared-security")
+            harness = ConnectorHarness(root)
+            try:
+                alice = harness.enroll("Alice", root / "alice")
+                bob = harness.enroll("Bob", root / "bob")
+                alice_config = alice.load_config("phoenix")
+                bob_config = bob.load_config("phoenix")
+                alice.trust("phoenix", str(bob_config["principal"]))
+                bob.trust("phoenix", str(alice_config["principal"]))
+
+                bob_ledger = ContextLedger("phoenix", root / "bob")
+                checkpoint = committed_revision(bob_ledger)
+                committed_retraction(bob_ledger)
+                queued = alice.queue_request(
+                    "phoenix",
+                    recipient=str(bob_config["principal"]),
+                    purpose="transport decision handoff",
+                    question="Which transport decisions changed?",
+                    kinds=["decision"],
+                    since_revision=str(checkpoint["id"]),
+                )
+                alice.flush("phoenix")
+                bob.sync("phoenix", "phoenix")
+
+                response = bob.respond("phoenix", "phoenix", str(queued["request_id"]))
+                self.assertEqual(response["status"], "needs-clarification")
+                self.assertEqual(response["claim_ids"], [])
+                bob.flush("phoenix")
+
+                received = alice.sync("phoenix", "phoenix")
+                self.assertEqual(received["quarantined"], [])
+                self.assertEqual(
+                    received["responses"][0]["status"], "needs-clarification"
+                )
+                self.assertIn("lifecycle removals", received["responses"][0]["note"])
+            finally:
+                harness.close()
+
     def test_authenticated_but_tampered_ciphertext_is_rejected_and_acked(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -243,6 +487,34 @@ class TeamConnectorTests(unittest.TestCase):
                 connector.ConnectorError, "signature is invalid"
             ):
                 client._verify_response("/v1/status", response, request_nonce="a" * 32)
+
+    def test_authenticated_hub_error_is_signed_before_permanent_classification(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            os.environ["SESSION_BRIDGE_HOME"] = str(root / "security")
+            harness = ConnectorHarness(root)
+            try:
+                alice = harness.enroll("Alice", root / "alice")
+                config = alice.load_config("phoenix")
+                with closing(sqlite3.connect(harness.store.database)) as connection:
+                    connection.execute(
+                        "DELETE FROM memberships WHERE project_id = ? AND principal = ?",
+                        (config["project_id"], config["principal"]),
+                    )
+                    connection.commit()
+                with self.assertRaisesRegex(
+                    connector.PermanentRejectionError,
+                    "not a project member",
+                ):
+                    alice.client(config).authenticated(
+                        "/v1/directory",
+                        {"project_id": config["project_id"]},
+                        alice.identity_path,
+                    )
+            finally:
+                harness.close()
 
     def test_mailbox_key_persists_and_private_key_tamper_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

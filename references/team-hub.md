@@ -4,6 +4,7 @@
 - [Trust boundary](#trust-boundary)
 - [Server records](#server-records)
 - [Delivery semantics](#delivery-semantics)
+- [Context Pull Requests](#context-pull-requests)
 - [Automation policy](#automation-policy)
 - [Normal team lifecycle](#normal-team-lifecycle)
 - [Operate a single-node Hub](#operate-a-single-node-hub)
@@ -90,6 +91,29 @@ it must not introduce another representation of Context Ledger state.
    message. The hub then erases its ciphertext while retaining a minimal
    receipt according to policy.
 
+## Context Pull Requests
+
+A `context-pull-request/v1` is a signed application payload containing the
+exact sender, recipient, project, purpose, question, optional baseline
+revision, typed selectors, sensitivity ceiling, claim/byte budgets, and
+expiry. Team Hub sees only the encrypted envelope metadata.
+
+The recipient verifies the endpoint signature and local trust binding before
+storing the request as protected exchange state. A request never enters the
+Context Ledger and never authorizes a command. The responding connector may
+select only active claims matching the signed request and, when a baseline is
+present, only the semantic changes after that revision. An unavailable
+baseline fails closed rather than expanding into a full snapshot.
+
+A `context-pull-response/v1` is terminal and correlated to the exact locally
+recorded request. `fulfilled` carries one recipient-bound Context Pack and its
+signed digest; `no-change`, `declined`, and `needs-clarification` carry no
+pack. The requester rechecks selectors and ceilings, rejects unsolicited or
+different duplicate responses, and quarantines a valid fulfilled pack through
+the normal ledger import boundary. See
+[Context Pull Request v1](context-pull-request.md) for the closed object shapes
+and verification algorithms.
+
 ## Automation policy
 
 Automation has two distinct jobs:
@@ -158,5 +182,6 @@ release has one schema and no live multi-node migration path.
 - no automatic trust in newly listed endpoints or changed project roles;
 - no automatic resolution of semantic conflicts;
 - no promise that a closed vendor application can be awakened;
+- no standing-policy engine for automatically answering recurring requests;
 - no SSO mapping until endpoint enrollment and the cryptographic protocol are
   proven in controlled team pilots.

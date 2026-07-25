@@ -426,10 +426,11 @@ class LedgerTests(unittest.TestCase):
                 "unreachable orphan",
             )
             _atomic_json(receiver.commits / "r-does-not-exist.json", orphan)
-            token = receiver.import_quarantine(path)
-            receiver.review_import(token)
-            with self.assertRaisesRegex(ValueError, "unknown parent"):
-                receiver.accept_import(token)
+            # A signed disclosure that grafts onto local history (any non-root
+            # revision) is rejected at import, before it can be quarantined,
+            # accepted, or silently supersede a local claim.
+            with self.assertRaisesRegex(ValueError, "independent root"):
+                receiver.import_quarantine(path)
             self.assertEqual(receiver.status()["heads"], [])
             self.assertEqual(receiver.log(), [])
 

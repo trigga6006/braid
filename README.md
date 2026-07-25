@@ -16,6 +16,8 @@ Session Bridge connects existing Claude Code and Codex sessions locally or acros
 
 For teams, the self-hosted Team Hub adds durable asynchronous mailboxes. Developers no longer need to start a temporary room at the same time: an endpoint connector can queue an approved Context Pack, the blind hub can retain its ciphertext while a teammate is offline, and the teammate's next sync places it into the existing Context Ledger quarantine. An optional always-on project agent can receive separately addressed checkpoints and produce scheduled project summaries.
 
+Version 0.5 adds **Context Pull Requests**: a trusted agent can ask another endpoint for a bounded semantic change (for example, decisions and blockers since a known revision). The answer is signed, correlated to the exact request, constrained by kind/label/sensitivity/claim/byte ceilings, encrypted in transit, and quarantined on receipt. It is context review between sovereign agents, not a shared mutable brain.
+
 It is built for the handoff that a ticket cannot capture: the research, decisions, constraints, rejected paths, tests, uncertainty, and open questions still living inside independent agent threads.
 
 ## The boundary
@@ -24,11 +26,12 @@ Session Bridge is not another generic agent protocol, tool bus, directory, or or
 
 | Layer | Session Bridge position |
 |---|---|
-| [A2A](https://a2aproject.github.io/A2A/latest/specification/) | A tested A2A-shaped data Artifact carries one complete signed disclosure and grant. Session Bridge does not implement or claim conformance with A2A discovery, tasks, messages, or transports. |
+| [A2A](https://a2a-protocol.org/v0.3.0/specification/) | A tested A2A-shaped data Artifact carries one complete signed disclosure and grant. Session Bridge does not implement or claim conformance with A2A discovery, tasks, messages, or transports. |
 | [MCP](https://modelcontextprotocol.io/specification/) | A local stdio server exposes the full ledger quarantine/review/accept lifecycle as closed-schema tools/resources. MCP owns invocation and transport, not context semantics. |
 | [AGNTCY / SLIM](https://docs.agntcy.org/) | No integration is shipped. Those projects address directory, identity, messaging, and observability; Session Bridge does not claim those capabilities. |
 | Scoped coordination | The temporary encrypted bridge includes short-lived task-scoped notes for questions and acknowledgements. Notes are not ledger state and cannot bypass signed disclosure acceptance. |
 | Team Hub | A self-hosted blind store-and-forward layer owns enrollment, project membership, public mailbox keys, opaque queues, receipts, and retention. It cannot read or merge Context Packs. |
+| Context Pull Request | A signed recipient-bound ask and terminal response select the smallest useful semantic delta. The request is data, never remote command authority. |
 | Context Ledger | Owns extraction, semantic revisions, recipient minimization, disclosure grants, provenance, freshness, conflicts, quarantine, and the who-was-issued-what audit. |
 
 The durable unit is a context change, not a chat message:
@@ -179,6 +182,38 @@ session-bridge-team trust --project omni --principal "ed25519:<key-id>"
 
 Never approve an endpoint from its editable label alone. Each directory mailbox key carries the endpoint's own Ed25519 signature, and local trust pins that signed key binding plus its project role. A new endpoint or changed role remains `untrusted` or `changed` until explicitly approved; outgoing publication fails closed and incoming envelopes from that endpoint are rejected before quarantine. Use `untrust` to remove a local approval.
 
+Ask for a bounded update without requesting a transcript. Put the question in a temporary file so it does not appear in the process list:
+
+```bash
+session-bridge-team request \
+  --project omni \
+  --to "ed25519:<peer-key-id>" \
+  --purpose "authentication handoff" \
+  --question-file question.txt \
+  --kind decision \
+  --kind blocker \
+  --label backend \
+  --since-revision <last-seen-revision> \
+  --max-sensitivity internal \
+  --max-claims 20
+
+session-bridge-team sync --project omni --ledger-project omni
+```
+
+Delete `question.txt` after queuing. The peer's next sync returns the request without placing it in the Context Ledger. The peer can inspect every inbound/outbound exchange and answer, decline, or request clarification:
+
+```bash
+session-bridge-team requests --project omni
+session-bridge-team respond \
+  --project omni \
+  --ledger-project omni \
+  --request-id <request-id> \
+  --status fulfilled
+session-bridge-team sync --project omni --ledger-project omni
+```
+
+`respond` selects only matching active claims within the signed ceilings and queues one terminal response. Its output lists the exact selected claim IDs before the next `sync` sends it. A fulfilled answer is independently signed by the responding endpoint and by its Context Ledger, and the requester still receives only a quarantine token. `declined`, `needs-clarification`, and `no-change` responses contain no Context Pack. A matching lifecycle removal returns `needs-clarification` rather than silently presenting a partial delta; send a reviewed checkpoint until signed deletion tombstones are added to the protocol.
+
 An agent still uses `braid` to extract, review, approve, and commit context. After that review gate, it can publish the current head separately to every teammate or only to project agents:
 
 ```bash
@@ -214,7 +249,7 @@ docker compose exec team-hub session-bridge-hub --data-dir /data endpoint \
   --principal "ed25519:<key-id>" --status disabled
 ```
 
-See [the Team Hub architecture and trust boundary](references/team-hub.md).
+See [the Team Hub architecture and trust boundary](references/team-hub.md) and the [competitive product map](references/product-map.md).
 
 ## Public internet bridge
 
@@ -238,6 +273,11 @@ The relay rejects a disclosure addressed to anyone other than the approved chann
 
 ## Interoperability
 
+[`context-pull-request/v1`](references/context-pull-request.md) is a closed,
+transport-neutral signed request/response format. Team Hub carries it today;
+the semantic object can later ride A2A, MCP, or SLIM without making Session
+Bridge another transport protocol.
+
 `scripts/context_adapters.py` maps a complete `context-disclosure/v1` bundle to one strict A2A-shaped data Artifact with MIME type `application/vnd.braid.context-disclosure+json;version=1`. Its test crosses the artifact boundary into receiver quarantine and acceptance. It deliberately creates no task lifecycle and is not a claim of full A2A conformance.
 
 `braid-mcp --project <name>` exposes the same ledger as a line-delimited MCP stdio server. It enforces MCP initialize/initialized lifecycle and JSON-RPC ID rules. Its closed-schema tools include stage/review/approval/commit, live conflict and freshness resources, and import quarantine/review/accept; the adapter adds no second database or context representation. An optional `--principal <ed25519:id>` pins the expected local endpoint identity.
@@ -250,7 +290,7 @@ The relay rejects a disclosure addressed to anyone other than the approved chann
 - Strict JSON shape/depth/size limits, duplicate-key rejection, credential scanning, PII redaction, request limits, and replay counters.
 - Crash-safe request retransmission prevents an accepted request with a lost response from desynchronizing the channel or duplicating a side effect.
 - Append-only hash-chained audit, exact claim disclosure records, freshness states, revocation tombstones, and quarantine-first imports.
-- State transitions write a hash-chained intent before multi-file mutation; an incomplete transition makes audit verification fail closed instead of disappearing from forensic history.
+- State transitions write a hash-chained intent before multi-file mutation. A prepare-only crash is recovered only when action-specific state proves no durable mutation occurred; partial or ambiguous transitions keep audit verification failed closed.
 - The bundled tunnel helper is release- and SHA-256-pinned. Arbitrary `cloudflared` binaries found on `PATH` are not executed implicitly.
 - Team Hub enforces one-use enrollment, endpoint-signed requests and mailbox-key bindings, local peer/role pinning, replay nonces, signed server responses, project membership, bounded concurrency and socket lifetimes, request limits, per-mailbox count/byte quotas, endpoint and IP rate limits, idempotent message IDs, ciphertext expiry, acknowledgement-time payload erasure, and a hash-chained server audit.
 
@@ -280,7 +320,7 @@ CI runs lint and format checks, compilation, the full suite, all three benchmark
 
 ## Release status and honest limits
 
-Version `0.4.x` is an open-source developer preview suitable for controlled team pilots, not a claim of SOC 2 readiness, guaranteed availability, or bug-free production use.
+Version `0.5.x` is an open-source developer preview suitable for controlled team pilots, not a claim of SOC 2 readiness, guaranteed availability, or bug-free production use.
 
 - Quick Tunnels provide convenience, not an enterprise SLA.
 - Endpoint compromise defeats confidentiality for context that endpoint may read.

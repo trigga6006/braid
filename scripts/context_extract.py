@@ -67,17 +67,32 @@ _CREDENTIAL_PATTERNS = (
     re.compile(
         r"(?i)\b(?:password|passwd|api[_ -]?key|access[_ -]?token|secret)\s*[:=]\s*(?!(?:redacted|omitted|none|not[ -]?set)\b)\S{3,}"
     ),
-    re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://[^\s/@:]+:[^\s/@]+@"),
+    # Bounded scheme/user/password runs keep this linear (an unbounded
+    # [a-z0-9+.-]* before "://" backtracks quadratically on input like "a.a.a").
+    re.compile(r"(?i)\b[a-z][a-z0-9+.-]{0,31}://[^\s/@:]{1,512}:[^\s/@]{1,512}@"),
 )
-_EMAIL = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I)
+# Bounded local-part/domain lengths keep this linear instead of O(n^2) on a long
+# run of "._%+-" with no "@".
+_EMAIL = re.compile(r"\b[A-Z0-9._%+-]{1,64}@[A-Z0-9.-]{1,255}\.[A-Z]{2,24}\b", re.I)
 _PHONE = re.compile(
     r"(?<!\w)(?:\+?\d{1,3}[ .-]?)?(?:\(?\d{3}\)?[ .-]?)\d{3}[ .-]\d{4}(?!\w)"
 )
 _SSN = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
+# Best-effort, deliberately over-broad instruction-shaped detector.  A hit only
+# marks the source untrusted/tentative (fail-safe), so false positives are
+# acceptable; all quantifiers are bounded so it cannot backtrack catastrophically.
 _INJECTION = re.compile(
-    r"(?i)\b(?:ignore|disregard|forget)\s+(?:all\s+)?(?:previous|prior|above)\s+(?:instructions|rules|prompts)\b|"
-    r"\b(?:system\s+message|developer\s+message|jailbreak|prompt\s+injection)\b|"
-    r"\b(?:do\s+not\s+follow|override)\s+(?:your\s+)?(?:instructions|rules)\b"
+    r"(?i)"
+    r"\b(?:ignore|disregard|forget|override|bypass)\b[^.\n]{0,40}?"
+    r"\b(?:previous|prior|above|earlier|preceding|all|the|these|those|your|any|system|initial)\b"
+    r"[^.\n]{0,40}?"
+    r"\b(?:instruction|instructions|rule|rules|prompt|prompts|direction|directions|guideline|guidelines)\b"
+    r"|\b(?:ignore|disregard|forget)\s+(?:everything|all)\b"
+    r"|\bfrom\s+now\s+on\b"
+    r"|\b(?:you\s+are\s+now|act\s+as|pretend\s+(?:to\s+be|you\s+are)|"
+    r"new\s+(?:instructions|rules|persona|system\s+prompt))\b"
+    r"|\b(?:system|developer)\s+(?:message|prompt)\b"
+    r"|\b(?:jailbreak|prompt\s+injection)\b"
 )
 _BULLET = re.compile(r"^\s*(?:[-*+]\s+|\d+[.)]\s+|>\s?)")
 _HEADING = re.compile(r"^\s{0,3}#{1,6}\s+(.*?)\s*#*\s*$")

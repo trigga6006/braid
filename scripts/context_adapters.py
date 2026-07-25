@@ -15,6 +15,7 @@ import context_model
 from context_security import (
     SecurityError,
     digest as security_digest,
+    validate_json_value,
     verify_disclosure_grant,
     verify_export,
 )
@@ -59,6 +60,15 @@ def _mapping(value: Any, label: str) -> dict[str, Any]:
 def normalize_bundle(bundle: Any) -> dict[str, Any]:
     """Canonicalize and cryptographically verify one governed disclosure."""
     value = _mapping(bundle, "signed disclosure")
+    # Bound depth/nodes on untrusted interchange data BEFORE canonicalizing, so a
+    # deeply nested payload raises a ContextAdapterError instead of an uncaught
+    # RecursionError out of json.dumps (byte size alone is not a complexity bound).
+    try:
+        validate_json_value(value)
+    except SecurityError as error:
+        raise ContextAdapterError(
+            f"Signed disclosure structure exceeds safety limits: {error}"
+        ) from error
     encoded = canonical_json(value).encode("utf-8")
     if len(encoded) > MAX_BUNDLE_BYTES:
         raise ContextAdapterError(

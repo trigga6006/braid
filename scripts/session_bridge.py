@@ -53,18 +53,30 @@ class Message:
     timestamp: str = ""
 
 
+# Generous bounds that still reject a pathological transcript/metadata file
+# (e.g. a single multi-gigabyte line) before it is read fully into memory.
+MAX_SESSION_FILE_BYTES = 64_000_000
+MAX_METADATA_FILE_BYTES = 8_000_000
+
+
 def iso_time(value: float) -> str:
     if not value:
         return ""
-    return (
-        dt.datetime.fromtimestamp(value, tz=dt.timezone.utc)
-        .isoformat()
-        .replace("+00:00", "Z")
-    )
+    try:
+        return (
+            dt.datetime.fromtimestamp(value, tz=dt.timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+    except (OverflowError, OSError, ValueError):
+        # A corrupt/out-of-range timestamp must not crash discovery.
+        return ""
 
 
 def read_jsonl(path: Path) -> Iterable[dict[str, Any]]:
     try:
+        if path.stat().st_size > MAX_SESSION_FILE_BYTES:
+            return
         with path.open("r", encoding="utf-8", errors="replace") as handle:
             for line in handle:
                 try:
@@ -173,6 +185,8 @@ def discover_claude_desktop_metadata() -> tuple[
             continue
         for path in root.rglob("*.json"):
             try:
+                if path.stat().st_size > MAX_METADATA_FILE_BYTES:
+                    continue
                 value = json.loads(path.read_text(encoding="utf-8", errors="replace"))
             except (OSError, json.JSONDecodeError, ValueError):
                 continue
@@ -490,12 +504,17 @@ def run_peer(session: Session, prompt: str, ephemeral: bool, dry_run: bool) -> s
         raise SystemExit(
             "This desktop session has no local resume ID. Continue/import it locally first."
         )
+    if session.resume_id.startswith("-"):
+        # resume_id comes from an untrusted vendor session file; a leading dash
+        # would be parsed as an option by the peer CLI.  Refuse it outright.
+        raise SystemExit("This session's resume ID is not a valid identifier.")
     bridged = peer_prompt(prompt, str(uuid.uuid4()))
     if session.provider == "codex":
         command = [executable, "exec", "resume", "--skip-git-repo-check"]
         if ephemeral:
             command.append("--ephemeral")
-        command.extend([session.resume_id, "-"])
+        # "--" terminates options so resume_id can never be read as a flag.
+        command.extend(["--", session.resume_id, "-"])
         input_text = bridged
     else:
         command = [

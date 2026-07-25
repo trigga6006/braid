@@ -60,6 +60,9 @@ AUDIT_TRANSITION_ACTIONS = frozenset(
     }
 )
 AUDIT_STANDALONE_ACTIONS = frozenset({"review-stage"})
+# Appended (never deletes evidence) to resolve a single dangling prepare left by
+# a crash mid-transition; it references the abandoned prepare's details digest.
+AUDIT_RECOVER_ACTION = "recover"
 AUDIT_ENTRY_FIELDS = frozenset({"at", "action", "details", "previous", "hash"})
 AUDIT_TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 AUDIT_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
@@ -107,6 +110,24 @@ def _read_untrusted_json(path: Path) -> Any:
         raise ValueError(f"Unsafe import: {error}") from error
 
 
+def _replace_with_retry(source: str, target: Path) -> None:
+    """os.replace that tolerates a transient Windows sharing violation.
+
+    On Windows, ``os.replace`` over a file a concurrent reader has briefly open
+    raises ``PermissionError``.  Lock-free read paths make that reachable during
+    a writer's replace, so retry for a bounded window before giving up.
+    """
+    deadline = time.monotonic() + 5.0
+    while True:
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if os.name != "nt" or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.02)
+
+
 def _atomic_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     data = canonical_json(value) + b"\n"
@@ -116,7 +137,7 @@ def _atomic_json(path: Path, value: Any) -> None:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(name, path)
+        _replace_with_retry(name, path)
         try:
             directory = os.open(str(path.parent), os.O_RDONLY)
             try:
@@ -177,6 +198,10 @@ def _audit_details_valid(action: str, details: Any) -> bool:
             frozenset({"token", "revision"}),
             {"token": str, "revision": str},
         ),
+        "recover": (
+            frozenset({"recovered_action", "digest"}),
+            {"recovered_action": str, "digest": str},
+        ),
     }
     schema = schemas.get(base_action)
     if schema is None or frozenset(details) != schema[0]:
@@ -211,9 +236,12 @@ def _lock(path: Path) -> Iterator[None]:
         if os.name == "nt":
             import msvcrt
 
-            handle.seek(0)
-            handle.write(b"0")
-            handle.flush()
+            # Only seed the placeholder byte once; appending on every acquisition
+            # would grow the lock file without bound.
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"0")
+                handle.flush()
             while True:
                 try:
                     handle.seek(0)
@@ -322,6 +350,9 @@ class ContextLedger:
                     legacy.setdefault("stage_id", "s-legacy")
                     _atomic_json(self.staging / "s-legacy.json", legacy)
                 self.staging_path.unlink(missing_ok=True)
+            # Recover a ledger left with a single dangling prepare by a crash
+            # mid-transition so it is not permanently bricked for all writes.
+            self._heal_audit_unlocked()
 
     def _state(self) -> dict[str, Any]:
         state = _read_json(self.state_path)
@@ -363,13 +394,12 @@ class ContextLedger:
             handle.flush()
             os.fsync(handle.fileno())
 
-    def _verify_audit_unlocked(self) -> bool:
+    @staticmethod
+    def _verify_lines(lines: list[str]) -> bool:
         previous = ""
         pending: list[tuple[str, str]] = []
-        if not self.audit_path.exists():
-            return True
         try:
-            for line in self.audit_path.read_text(encoding="utf-8").splitlines():
+            for line in lines:
                 entry = strict_json_loads(line, allowed_fields=set(AUDIT_ENTRY_FIELDS))
                 if (
                     not isinstance(entry, dict)
@@ -387,6 +417,7 @@ class ContextLedger:
                     not in (
                         AUDIT_TRANSITION_ACTIONS
                         | AUDIT_STANDALONE_ACTIONS
+                        | {AUDIT_RECOVER_ACTION}
                         | {"prepare-" + item for item in AUDIT_TRANSITION_ACTIONS}
                     )
                     or not isinstance(at, str)
@@ -405,6 +436,11 @@ class ContextLedger:
                 details_digest = digest(details)
                 if action.startswith("prepare-"):
                     pending.append((action.removeprefix("prepare-"), details_digest))
+                elif action == AUDIT_RECOVER_ACTION:
+                    reference = (details["recovered_action"], details["digest"])
+                    if reference not in pending:
+                        return False
+                    pending.remove(reference)
                 elif action in AUDIT_TRANSITION_ACTIONS:
                     if (action, details_digest) not in pending:
                         return False
@@ -412,6 +448,119 @@ class ContextLedger:
             return not pending
         except (OSError, SecurityError, json.JSONDecodeError, TypeError, ValueError):
             return False
+
+    def _verify_audit_unlocked(self) -> bool:
+        if not self.audit_path.exists():
+            return True
+        try:
+            lines = self.audit_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return False
+        return self._verify_lines(lines)
+
+    def _prepared_transition_touched_state(
+        self, action: str, details: dict[str, Any]
+    ) -> bool:
+        """Return true when a prepared transition may have changed durable state.
+
+        Recovery is allowed only for an intent that provably stopped before its
+        first durable effect.  Ambiguity fails closed: appending ``recover`` to a
+        partially or fully applied mutation would make the audit claim validity
+        without a terminal record for the visible state change.
+        """
+
+        try:
+            if action == "stage":
+                return (self.staging / f"{details['stage_id']}.json").exists()
+            if action == "approve-stage":
+                staged = _read_json(self.staging / f"{details['stage_id']}.json")
+                return isinstance(staged, dict) and (
+                    staged.get("reviewed") is True
+                    or staged.get("approved_digest") == details.get("digest")
+                )
+            if action == "commit":
+                revision_id = str(details["id"])
+                state = self._state()
+                return (
+                    (self.commits / f"{revision_id}.json").exists()
+                    or revision_id in state["heads"]
+                )
+            if action == "reconcile":
+                return (self.reconciliations / f"{details['token']}.json").exists()
+            if action == "quarantine":
+                return (self.quarantine / f"{details['token']}.json").exists()
+            if action == "review-import":
+                item = _read_json(self.quarantine / f"{details['token']}.json")
+                return isinstance(item, dict) and (
+                    bool(item.get("reviewed_at"))
+                    or item.get("reviewed_digest") is not None
+                )
+            if action == "revoke":
+                return str(details["claim"]) in self._state()["revoked"]
+            # An export can write its caller-selected output before recording
+            # disclosure state, and accept-import can touch a pre-existing commit
+            # plus several state fields. Their prepared details are insufficient
+            # to prove that no durable effect occurred, so never auto-heal them.
+            if action in {"disclose", "accept-import"}:
+                return True
+        except (KeyError, OSError, TypeError, ValueError):
+            return True
+        return True
+
+    def _heal_audit_unlocked(self) -> None:
+        """Recover from a crash mid-transition without weakening tamper-evidence.
+
+        A power loss or ``kill -9`` immediately after a durable
+        ``prepare-<action>`` entry can leave exactly one trailing, unmatched
+        prepare. Rather than delete evidence, append a hash-chained ``recover``
+        record only when action-specific durable state proves the mutation never
+        began. If any effect is visible or ambiguous, leave the audit invalid so
+        partially or fully applied state cannot be certified without its matching
+        terminal marker.
+        """
+        if not self.audit_path.exists():
+            return
+        try:
+            lines = self.audit_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return
+        if not lines or self._verify_lines(lines):
+            return
+        try:
+            last = strict_json_loads(lines[-1], allowed_fields=set(AUDIT_ENTRY_FIELDS))
+        except (SecurityError, ValueError):
+            return
+        if (
+            not isinstance(last, dict)
+            or not isinstance(last.get("action"), str)
+            or not last["action"].startswith("prepare-")
+            or not isinstance(last.get("details"), dict)
+        ):
+            return
+        recovered_action = last["action"].removeprefix("prepare-")
+        if self._prepared_transition_touched_state(
+            recovered_action, last["details"]
+        ):
+            return
+        entry = {
+            "at": _now(),
+            "action": AUDIT_RECOVER_ACTION,
+            "details": {
+                "recovered_action": recovered_action,
+                "digest": digest(last["details"]),
+            },
+            "previous": str(last.get("hash", "")),
+        }
+        entry["hash"] = digest(entry)
+        serialized = canonical_json(entry).decode("utf-8")
+        # Commit the recovery only if it yields a fully valid chain: this proves
+        # the sole defect was the single trailing dangling prepare.
+        if not self._verify_lines(lines + [serialized]):
+            return
+        with open(self.audit_path, "ab") as handle:
+            handle.write(canonical_json(entry) + b"\n")
+            handle.flush()
+            os.fsync(handle.fileno())
 
     def verify_audit(self) -> bool:
         with _lock(self.lock_path):
@@ -747,17 +896,20 @@ class ContextLedger:
             return revision
 
     def show(self, revision_id: str) -> dict[str, Any]:
-        return self._revision(revision_id)
+        with _lock(self.lock_path):
+            return self._revision(revision_id)
 
     def log(self) -> list[dict[str, Any]]:
-        return sorted(
-            self.current_history(),
-            key=lambda item: (int(item["revision"]["sequence"]), item["id"]),
-            reverse=True,
-        )
+        with _lock(self.lock_path):
+            return sorted(
+                self.current_history(),
+                key=lambda item: (int(item["revision"]["sequence"]), item["id"]),
+                reverse=True,
+            )
 
     def diff(self, before: str, after: str) -> dict[str, Any]:
-        return semantic_diff(self._history(before), self._history(after))
+        with _lock(self.lock_path):
+            return semantic_diff(self._history(before), self._history(after))
 
     def current_history(self) -> list[dict[str, Any]]:
         heads = self._state()["heads"]
@@ -771,46 +923,49 @@ class ContextLedger:
         )
 
     def freshness(self, now: str | None = None) -> dict[str, Any]:
-        view = resolved_active_view(self.current_history(), now)
-        revoked = self._state()["revoked"]
-        kept, historical = [], list(view["historical_claims"])
-        for claim in view["active_claims"]:
-            if claim["id"] in revoked:
-                item = dict(claim)
-                item["effective_status"] = "revoked"
-                item["revocation"] = revoked[claim["id"]]
-                historical.append(item)
-            else:
-                kept.append(claim)
-        view["active_claims"] = kept
-        view["historical_claims"] = sorted(historical, key=lambda item: item["id"])
-        return view
+        with _lock(self.lock_path):
+            view = resolved_active_view(self.current_history(), now)
+            revoked = self._state()["revoked"]
+            kept, historical = [], list(view["historical_claims"])
+            for claim in view["active_claims"]:
+                if claim["id"] in revoked:
+                    item = dict(claim)
+                    item["effective_status"] = "revoked"
+                    item["revocation"] = revoked[claim["id"]]
+                    historical.append(item)
+                else:
+                    kept.append(claim)
+            view["active_claims"] = kept
+            view["historical_claims"] = sorted(historical, key=lambda item: item["id"])
+            return view
 
     def conflicts(self) -> dict[str, Any]:
         """Return a read-only conflict view for the current pair of heads."""
-        heads = list(self._state()["heads"])
-        if len(heads) != 2:
+        with _lock(self.lock_path):
+            heads = list(self._state()["heads"])
+            if len(heads) != 2:
+                return {
+                    "heads": heads,
+                    "auto_claims": [],
+                    "conflicts": [],
+                    "mergeable": True,
+                }
             return {
                 "heads": heads,
-                "auto_claims": [],
-                "conflicts": [],
-                "mergeable": True,
+                **plan_merge(self._history(heads[0]), self._history(heads[1])),
             }
-        return {
-            "heads": heads,
-            **plan_merge(self._history(heads[0]), self._history(heads[1])),
-        }
 
     def plan(
         self, recipient_profile: dict[str, Any], claim_ids: list[str] | None = None
     ) -> dict[str, Any]:
-        state = self._state()
-        return plan_disclosure(
-            self.current_history(),
-            recipient_profile,
-            revoked_claim_ids=state["revoked"],
-            required_claim_ids=claim_ids or [],
-        )
+        with _lock(self.lock_path):
+            state = self._state()
+            return plan_disclosure(
+                self.current_history(),
+                recipient_profile,
+                revoked_claim_ids=state["revoked"],
+                required_claim_ids=claim_ids or [],
+            )
 
     def prepare_reconciliation(
         self, local_ids: list[str], remote_ids: list[str]
@@ -1096,6 +1251,15 @@ class ContextLedger:
         quarantined = verify_export(signed, recipient=self.principal)
         revision = dict(quarantined.export["revision"])
         validate_revision(revision)
+        # The legitimate protocol always emits a parentless, sequence-1 root
+        # disclosure.  A revision that names a local head as its parent would be
+        # accepted as a higher-sequence descendant and silently supersede local
+        # claims in the resolved view; require an independent root so any real
+        # divergence must go through explicit two-head reconciliation.
+        if revision["revision"]["parent_ids"]:
+            raise SecurityError(
+                "A signed disclosure must be an independent root revision."
+            )
         verify_disclosure_grant(
             grant,
             pack_digest=security_digest(revision),
@@ -1129,6 +1293,7 @@ class ContextLedger:
                     "semantic_key": claim["semantic_key"],
                     "confidence": claim["confidence"],
                     "sensitivity": claim.get("sensitivity", "internal"),
+                    "supersedes": claim.get("supersedes", []),
                     "provenance": claim["provenance"],
                 }
                 for claim in redacted_revision["claims"]
@@ -1185,6 +1350,15 @@ class ContextLedger:
             "author_key_id": quarantined.author_key_id,
         }
         with _lock(self.lock_path):
+            # Deduplicate a byte-identical pack already awaiting review so an
+            # interrupted/retried publish does not create a second token for the
+            # same content.
+            for existing_path in self.quarantine.glob("*.json"):
+                existing = _read_json(existing_path)
+                if isinstance(existing, dict) and secrets.compare_digest(
+                    str(existing.get("bundle_digest", "")), bundle_digest
+                ):
+                    return existing_path.stem
             self._prepare_audit("quarantine", details)
             _atomic_json(self.quarantine / (token + ".json"), record)
             self._audit("quarantine", details)
@@ -1264,11 +1438,30 @@ class ContextLedger:
             ) != canonical_json(revision):
                 raise ValueError("Revision identifier collision.")
             state = self._state()
-            remote = state["remote_policies"].get(str(signed["project"]))
+            # Policy monotonicity is a per-authoring-key invariant: policy_digest
+            # is derived from the sender's own governance, so two co-members
+            # sharing a ledger-project name legitimately present different
+            # digests.  Keying by project alone would flag the second peer as an
+            # equivocation and permanently reject every peer but the first.
+            project_key = str(signed["project"])
+            policy_key = project_key + "\x1f" + quarantined.author_key_id
+            remote = state["remote_policies"].get(policy_key)
             current_policy = (
                 int(signed["policy_version"]),
                 str(signed["policy_digest"]),
             )
+            # A pre-migration project-wide baseline (bare-project key, no author)
+            # still bars a rollback to a lower policy version for any author on
+            # that project, so the upgrade cannot open a one-time downgrade.
+            legacy_floor = state["remote_policies"].get(project_key)
+            if (
+                isinstance(legacy_floor, dict)
+                and "version" in legacy_floor
+                and current_policy[0] < int(legacy_floor["version"])
+            ):
+                raise PermissionError(
+                    "Remote policy version is below the recorded project floor."
+                )
             if remote and (
                 current_policy[0] < int(remote["version"])
                 or (
@@ -1294,7 +1487,7 @@ class ContextLedger:
             # from heads and therefore hidden from log/current views.
             _atomic_json(self.commits / (rid + ".json"), revision)
             state["trusted_keys"][quarantined.author_key_id] = public_key
-            state["remote_policies"][str(signed["project"])] = {
+            state["remote_policies"][policy_key] = {
                 "version": current_policy[0],
                 "digest": current_policy[1],
             }
@@ -1303,6 +1496,6 @@ class ContextLedger:
                 int(state["sequence"]), int(revision["revision"]["sequence"])
             )
             _atomic_json(self.state_path, state)
-            (self.quarantine / (token + ".json")).unlink()
+            (self.quarantine / (token + ".json")).unlink(missing_ok=True)
             self._audit("accept-import", details)
             return revision

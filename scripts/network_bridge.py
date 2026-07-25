@@ -23,6 +23,7 @@ from pathlib import Path
 import platform
 import re
 import secrets
+import shlex
 import shutil
 import socket
 import ssl
@@ -347,18 +348,26 @@ def keychain_master_key(create: bool) -> tuple[str, bytes | None]:
         encoded = b64e(key)
         try:
             if backend == "macos-keychain":
-                stored = subprocess.run(
-                    [
-                        "security",
+                # The macOS tool treats a bare ``-w`` as an interactive, twice-
+                # entered password prompt; it does not consume one password from
+                # stdin.  Use its command-interpreter mode instead so the complete
+                # command (including the secret) travels only over stdin and never
+                # appears in the process argv.
+                interactive = " ".join(
+                    (
                         "add-generic-password",
                         "-U",
                         "-a",
-                        account,
+                        shlex.quote(account),
                         "-s",
-                        "Session Bridge local key",
+                        shlex.quote("Session Bridge local key"),
                         "-w",
                         encoded,
-                    ],
+                    )
+                )
+                stored = subprocess.run(
+                    ["security", "-i"],
+                    input=interactive + "\n",
                     capture_output=True,
                     text=True,
                     timeout=10,
@@ -1672,12 +1681,26 @@ class BridgeHandler(BaseHTTPRequestHandler):
         else:
             self.send_value(404, {"error": "Not found."})
 
+    def _client_ip(self) -> str:
+        raw = str(self.client_address[0])
+        # In public transport a local Cloudflare tunnel proxies every remote peer
+        # from loopback, so per-peer rate limiting needs the tunnel-supplied
+        # client IP; the Cf-Connecting-Ip header is set by the Cloudflare edge.
+        if raw in ("127.0.0.1", "::1"):
+            forwarded = self.headers.get("Cf-Connecting-Ip") or self.headers.get(
+                "X-Forwarded-For", ""
+            )
+            candidate = forwarded.split(",")[0].strip()
+            if candidate:
+                return candidate[:64]
+        return raw
+
     def do_POST(self) -> None:
         state = self.active_state()
         if state is None:
             return
         endpoint = urlsplit(self.path).path
-        client_ip = str(self.client_address[0])
+        client_ip = self._client_ip()
         limit = 8 if endpoint == "/v2/join" else 120
         if not rate_allowed(f"{client_ip}:{endpoint}", limit):
             self.send_value(429, {"error": "Rate limit exceeded."})

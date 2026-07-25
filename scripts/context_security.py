@@ -25,8 +25,13 @@ from typing import Any, Iterable, Mapping
 
 FORMAT = "braid-context-security/v1"
 MAX_DEPTH = 24
-MAX_NODES = 20_000
+# Large enough for any context_model-valid revision (MAX_CLAIMS=500 with rich
+# provenance stays under MAX_REVISION_BYTES=1 MB, ~30-40k nodes), while still
+# bounding an adversarial 2 MB import to a fast O(n) structural walk.
+MAX_NODES = 100_000
 MAX_STRING = 250_000
+# Bounded, revocation-independent maximum lifetime for signed exports and grants.
+MAX_LIFETIME_SECONDS = 31 * 24 * 3600
 MAX_COLLECTION = 5_000
 MAX_SIGNATURE = 128
 HEX_DIGEST = re.compile(r"^[0-9a-f]{64}$")
@@ -87,7 +92,13 @@ SENSITIVE_PATTERNS = (
     ),
     (
         "credential-url",
-        re.compile(r"\b[a-z][a-z0-9+.-]*://[^\s/@:]+:[^\s/@]+@", re.IGNORECASE),
+        # Bounded scheme/user/password runs keep this strictly linear; an
+        # unbounded [a-z0-9+.-]* before "://" backtracks quadratically on input
+        # like "a.a.a...".
+        re.compile(
+            r"\b[a-z][a-z0-9+.-]{0,31}://[^\s/@:]{1,512}:[^\s/@]{1,512}@",
+            re.IGNORECASE,
+        ),
     ),
 )
 
@@ -193,6 +204,11 @@ def _b64d(value: Any, maximum: int = 4096) -> bytes:
         raise SecurityError("invalid base64 value") from error
     if len(result) > maximum:
         raise SecurityError("base64 value exceeds limit")
+    # Reject non-canonical encodings (unused trailing bits, stray padding) so a
+    # signed object has exactly one byte-for-byte encoding.  This keeps digests
+    # that include a signature string stable and blocks signature malleability.
+    if _b64e(result) != value:
+        raise SecurityError("non-canonical base64 value")
     return result
 
 
@@ -350,10 +366,10 @@ def _load_or_create_identity_unlocked(target: Path) -> AuthorIdentity:
         f".{target.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
     )
     try:
-        temporary.write_text(
-            json.dumps(body, sort_keys=True, separators=(",", ":")) + "\n",
-            encoding="utf-8",
-        )
+        with open(temporary, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(body, sort_keys=True, separators=(",", ":")) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
         try:
             temporary.chmod(0o600)
         except OSError:
@@ -409,7 +425,7 @@ def sign_export(
 ) -> dict[str, Any]:
     """Return an immutable, recipient- and policy-bound signed export."""
     now = int(time.time())
-    if expires_at <= now or expires_at > now + 31 * 24 * 3600:
+    if expires_at <= now or expires_at > now + MAX_LIFETIME_SECONDS:
         raise SecurityError("export expiry must be in the next 31 days")
     parent_list = list(parents)
     if len(parent_list) > 64:
@@ -451,6 +467,8 @@ def validate_export_shape(
     expires = _check_time(export.get("expires_at"), "expiry")
     if expires <= created or (now is not None and expires <= now):
         raise SecurityError("export is expired")
+    if expires > created + MAX_LIFETIME_SECONDS:
+        raise SecurityError("export lifetime exceeds the 31-day maximum")
     _check_digest(export.get("author_key_id"), "author key id")
     public = _b64d(export.get("author_public_key"), 64)
     if hashlib.sha256(public).hexdigest() != export["author_key_id"]:
@@ -532,7 +550,7 @@ def create_disclosure_grant(
     operations_list = list(operations)
     if not operations_list or set(operations_list) - {"read", "review", "merge"}:
         raise SecurityError("invalid disclosure operations")
-    if expires_at <= now or expires_at > now + 31 * 24 * 3600:
+    if expires_at <= now or expires_at > now + MAX_LIFETIME_SECONDS:
         raise SecurityError("grant expiry must be in the next 31 days")
     grant: dict[str, Any] = {
         "format": FORMAT,
@@ -576,6 +594,7 @@ def validate_grant_shape(
     if (
         expires <= issued
         or (now is not None and expires <= now)
+        or expires > issued + MAX_LIFETIME_SECONDS
         or grant.get("delegable") is not False
     ):
         raise SecurityError("invalid or expired disclosure grant")
@@ -737,7 +756,13 @@ def strict_json_loads(
                 SecurityError("invalid JSON constant")
             ),
         )
-    except (TypeError, UnicodeDecodeError, json.JSONDecodeError) as error:
+    except SecurityError:
+        raise
+    except (TypeError, UnicodeDecodeError, ValueError, RecursionError) as error:
+        # json.loads raises RecursionError on deeply nested input and a bare
+        # ValueError on an over-length integer literal, both BEFORE
+        # validate_json_value can bound them.  Fail closed so no caller sees a
+        # non-SecurityError escape (which would wedge fail-closed receive loops).
         raise SecurityError("invalid JSON") from error
     validate_json_value(parsed, allowed_fields=allowed_fields)
     return parsed
