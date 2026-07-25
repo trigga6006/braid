@@ -37,9 +37,11 @@ braid-mcp = "context_mcp:main"
 package-dir = {"" = "scripts"}
 py-modules = [
   "session_bridge", "network_bridge", "context_adapters", "context_bridge",
-  "context_exchange",
+  "context_exchange", "context_handoff",
   "context_extract", "context_mcp", "context_model", "context_policy",
   "context_security", "context_store",
+  "incident_workflow",
+  "terminal_safe",
   "team_hub",
   "team_connector",
 ]

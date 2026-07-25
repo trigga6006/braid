@@ -636,6 +636,36 @@ def command_ask(args: argparse.Namespace) -> None:
     write_output(response, args.output)
 
 
+def command_handoff(args: argparse.Namespace) -> None:
+    # Imported lazily: the ledger modules pull in cryptography, and discovery
+    # commands must keep working without it.
+    try:
+        import context_handoff
+    except ImportError as error:  # pragma: no cover - depends on install extras
+        raise SystemExit(
+            "handoff needs the context ledger modules; install session-bridge "
+            f"with its dependencies ({error})."
+        ) from error
+    try:
+        result = context_handoff.run_handoff(
+            args.source,
+            args.project,
+            provider=args.provider,
+            max_chars=args.max_chars,
+            home=args.home,
+            destination_principal=args.to_principal,
+            dry_run=args.dry_run,
+        )
+    except context_handoff.HandoffRefused as error:
+        raise SystemExit(f"Refusing this handoff.\n{error}") from error
+    except (ValueError, PermissionError, OSError) as error:
+        raise SystemExit(f"handoff failed: {error}") from error
+    if args.json:
+        write_output(json.dumps(result, indent=2, ensure_ascii=False) + "\n", None)
+        return
+    write_output(context_handoff.render_handoff(result), None)
+
+
 def command_doctor(_: argparse.Namespace) -> None:
     by_cli, by_desktop = discover_claude_desktop_metadata()
     report = {
@@ -706,6 +736,53 @@ def build_parser() -> argparse.ArgumentParser:
     ask_parser.add_argument("--dry-run", action="store_true")
     ask_parser.add_argument("--output")
     ask_parser.set_defaults(function=command_ask)
+
+    handoff_parser = subparsers.add_parser(
+        "handoff",
+        help="Capture one local session into your own local context ledger",
+        description=(
+            "One-step, same-principal, local-only handoff: resolve a local "
+            "session, extract claims with every scanner active, then stage, "
+            "review, approve, and commit them to your own local ledger. "
+            "Refuses anything that crosses a trust boundary."
+        ),
+    )
+    handoff_parser.add_argument(
+        "--from",
+        dest="source",
+        required=True,
+        metavar="SESSION",
+        help="Local session ID, resume ID, or title fragment to capture.",
+    )
+    handoff_parser.add_argument(
+        "--project", required=True, help="Ledger project name; never a path."
+    )
+    handoff_parser.add_argument(
+        "--provider", choices=("all", "codex", "claude"), default="all"
+    )
+    handoff_parser.add_argument(
+        "--max-chars",
+        type=int,
+        default=None,
+        help="Characters of the most recent conversation to read (default 24000).",
+    )
+    handoff_parser.add_argument(
+        "--home", help="Local ledger root; equivalent to SESSION_BRIDGE_HOME."
+    )
+    handoff_parser.add_argument(
+        "--to-principal",
+        help=(
+            "Assert the destination principal. It must equal this endpoint's "
+            "own key-derived principal; anything else is refused."
+        ),
+    )
+    handoff_parser.add_argument("--json", action="store_true")
+    handoff_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Extract, stage, and review without approving or committing.",
+    )
+    handoff_parser.set_defaults(function=command_handoff)
 
     doctor_parser = subparsers.add_parser(
         "doctor", help="Report local dependencies and session stores"

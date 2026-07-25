@@ -7,10 +7,13 @@ import argparse
 import json
 from pathlib import Path
 import sys
+import tempfile
 from typing import Any
 
+from context_adapters import a2a_artifact_to_bundle, bundle_to_a2a_artifact
 from context_extract import extract_markdown_claims, extract_message_claims
-from context_store import ContextLedger, _atomic_json
+from context_store import ContextLedger, _atomic_json, _read_untrusted_json
+from terminal_safe import terminal_safe
 
 
 VERSION = "0.5.0"
@@ -204,9 +207,60 @@ def cmd_export(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_a2a_export(args: argparse.Namespace) -> None:
+    output = _local(args.output)
+    ledger = _ledger(args)
+    with tempfile.TemporaryDirectory(prefix="braid-a2a-export-") as directory:
+        bundle_path = Path(directory) / "bundle.json"
+        result = ledger.export(
+            args.revision,
+            bundle_path,
+            args.recipient,
+            args.claim or None,
+            args.purpose,
+            args.max_sensitivity,
+        )
+        artifact = bundle_to_a2a_artifact(_json_file(str(bundle_path)))
+    _atomic_json(output, artifact)
+    _print(
+        {
+            "recipient": result["recipient"],
+            "revision": result["revision"],
+            "claim_ids": result["claim_ids"],
+            "artifactId": artifact["artifactId"],
+            "digest": artifact["metadata"]["sha256"],
+            "output": str(output),
+            "next_argv": _next_argv(args, "a2a-import", str(output)),
+        }
+    )
+
+
 def cmd_import(args: argparse.Namespace) -> None:
     ledger = _ledger(args)
     token = ledger.import_quarantine(_local(args.source))
+    _print(
+        {
+            "quarantine_token": token,
+            "reviewed": False,
+            "next_argv": _next_argv(args, "review-import", token),
+        }
+    )
+
+
+def cmd_a2a_import(args: argparse.Namespace) -> None:
+    # An A2A artifact is untrusted interchange data, exactly like the bundle
+    # ``import`` reads, so it gets the same hardened read: bytes are capped
+    # BEFORE parsing, duplicate keys are rejected instead of silently resolving
+    # last-wins, and nesting is bounded.  A plain ``json.loads`` here would
+    # answer an oversized file with memory exhaustion and a deeply nested one
+    # with an uncaught RecursionError.
+    artifact = _read_untrusted_json(_local(args.source))
+    bundle = a2a_artifact_to_bundle(artifact)
+    ledger = _ledger(args)
+    with tempfile.TemporaryDirectory(prefix="braid-a2a-import-") as directory:
+        bundle_path = Path(directory) / "bundle.json"
+        _atomic_json(bundle_path, bundle)
+        token = ledger.import_quarantine(bundle_path)
     _print(
         {
             "quarantine_token": token,
@@ -418,6 +472,14 @@ def build_parser() -> argparse.ArgumentParser:
         *disclosure_args,
     )
     add(
+        "a2a-export",
+        cmd_a2a_export,
+        "Create a signed disclosure wrapped in an A2A artifact",
+        (("revision",), {}),
+        (("--output",), {"required": True}),
+        *disclosure_args,
+    )
+    add(
         "import",
         cmd_import,
         "Verify and quarantine a signed local bundle",
@@ -425,6 +487,12 @@ def build_parser() -> argparse.ArgumentParser:
             ("source",),
             {"help": "Local disclosure bundle or single-event watch response."},
         ),
+    )
+    add(
+        "a2a-import",
+        cmd_a2a_import,
+        "Verify an A2A artifact and quarantine its signed disclosure",
+        (("source",), {"help": "Local A2A artifact file."}),
     )
     add(
         "review-import",
@@ -513,7 +581,11 @@ def main() -> int:
         args.fn(args)
         return 0
     except (ValueError, PermissionError, OSError, json.JSONDecodeError) as error:
-        print(f"error: {error}", file=sys.stderr)
+        # Untrusted input reaches this message verbatim -- a rejected top-level
+        # key from an A2A artifact is echoed back by ContextAdapterError, and it
+        # is printed BEFORE any signature has been checked.  Escape it so a
+        # malformed artifact cannot drive the reader's terminal.
+        print(f"error: {terminal_safe(error, 4000)}", file=sys.stderr)
         return 2
 
 

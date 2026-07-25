@@ -30,6 +30,7 @@ from context_security import (
     verify_identity_assertion,
 )
 from context_store import ContextLedger
+import incident_workflow as incident
 import network_bridge as bridge
 import team_hub as hub
 
@@ -1913,6 +1914,20 @@ def _read_question(args: argparse.Namespace) -> str:
     raise ConnectorError("Provide the question with --question-file or stdin.")
 
 
+def _read_optional_question(args: argparse.Namespace) -> str | None:
+    """Read an incident question from a file, or fall back to the preset text.
+
+    Deliberately does not consume stdin: an incident command must never block
+    an on-call operator waiting for input that will not arrive.
+    """
+    if not args.question_file:
+        return None
+    path = Path(args.question_file).expanduser()
+    if path.stat().st_size > exchange.MAX_QUESTION_CHARS * 4:
+        raise ConnectorError("Context Pull Request question file is too large.")
+    return path.read_text(encoding="utf-8").strip()
+
+
 def _print(value: Mapping[str, Any]) -> None:
     print(json.dumps(value, indent=2, sort_keys=True))
 
@@ -1968,6 +1983,42 @@ def command_respond(args: argparse.Namespace) -> None:
             args.request_id,
             status=args.status,
             note=args.note,
+        )
+    )
+
+
+def command_incident_ask(args: argparse.Namespace) -> None:
+    _print(
+        incident.ask(
+            TeamConnector(args.home),
+            args.project,
+            recipient=args.to,
+            purpose=args.purpose,
+            question=_read_optional_question(args),
+            severity=args.severity,
+            since_revision=args.since_revision,
+        )
+    )
+
+
+def command_incident_brief(args: argparse.Namespace) -> None:
+    endpoint = TeamConnector(args.home)
+    brief = incident.build_brief(
+        ContextLedger(args.ledger_project, endpoint.home),
+        project=args.project,
+        ledger_project=args.ledger_project,
+        since_revision=args.since_revision,
+    )
+    if args.json:
+        _print(brief)
+    else:
+        print(incident.render_brief(brief))
+
+
+def command_incident_status(args: argparse.Namespace) -> None:
+    _print(
+        incident.build_status(
+            TeamConnector(args.home), args.project, args.ledger_project
         )
     )
 
@@ -2154,6 +2205,48 @@ def build_parser() -> argparse.ArgumentParser:
     )
     respond.add_argument("--note", default="")
     respond.set_defaults(handler=command_respond)
+
+    incident_parser = commands.add_parser(
+        "incident",
+        help="On-call incident handoff: ask, brief, and open-state triage.",
+    )
+    incident_commands = incident_parser.add_subparsers(
+        dest="incident_command", required=True
+    )
+
+    incident_ask = incident_commands.add_parser(
+        "ask",
+        help="Queue the curated incident Context Pull Request preset.",
+    )
+    incident_ask.add_argument("--project", required=True)
+    incident_ask.add_argument("--to", required=True, help="Trusted endpoint principal.")
+    incident_ask.add_argument("--purpose", required=True)
+    incident_ask.add_argument(
+        "--severity",
+        choices=incident.SEVERITIES,
+        default=incident.DEFAULT_SEVERITY,
+    )
+    incident_ask.add_argument("--since-revision")
+    incident_ask.add_argument("--question-file")
+    incident_ask.set_defaults(handler=command_incident_ask)
+
+    incident_brief = incident_commands.add_parser(
+        "brief",
+        help="Render a read-only on-call brief from the local reviewed ledger.",
+    )
+    incident_brief.add_argument("--project", required=True)
+    incident_brief.add_argument("--ledger-project", required=True)
+    incident_brief.add_argument("--since-revision")
+    incident_brief.add_argument("--json", action="store_true")
+    incident_brief.set_defaults(handler=command_incident_brief)
+
+    incident_status = incident_commands.add_parser(
+        "status",
+        help="Show pending requests, quarantined responses, and open conflicts.",
+    )
+    incident_status.add_argument("--project", required=True)
+    incident_status.add_argument("--ledger-project", required=True)
+    incident_status.set_defaults(handler=command_incident_status)
 
     queue = commands.add_parser(
         "queue",
