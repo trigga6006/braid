@@ -459,7 +459,7 @@ def transcript_payload(session: Session, max_chars: int) -> dict[str, Any]:
 def render_markdown(payload: dict[str, Any]) -> str:
     session = payload["session"]
     lines = [
-        "# Session Bridge Transcript",
+        "# Braid Transcript",
         "",
         f"- Provider: {session['provider']}",
         f"- Surface: {session['surface']}",
@@ -487,9 +487,9 @@ def write_output(text: str, output: str | None) -> None:
 
 def peer_prompt(prompt: str, request_id: str) -> str:
     return (
-        f"[SESSION_BRIDGE_REQUEST {request_id}]\n"
-        "You are the peer in a session-to-session bridge. Use your existing session context to answer the requesting session. "
-        "Do not invoke session-bridge, do not relay to another agent, and do not modify files. Return a self-contained response with important uncertainties and provenance.\n\n"
+        f"[BRAID_REQUEST {request_id}]\n"
+        "You are the peer in a session-to-session handoff. Use your existing session context to answer the requesting session. "
+        "Do not invoke braid, do not relay to another agent, and do not modify files. Return a self-contained response with important uncertainties and provenance.\n\n"
         f"Request from the driver session:\n{prompt.strip()}\n"
     )
 
@@ -643,7 +643,7 @@ def command_handoff(args: argparse.Namespace) -> None:
         import context_handoff
     except ImportError as error:  # pragma: no cover - depends on install extras
         raise SystemExit(
-            "handoff needs the context ledger modules; install session-bridge "
+            "handoff needs the context ledger modules; install braid "
             f"with its dependencies ({error})."
         ) from error
     try:
@@ -767,7 +767,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Characters of the most recent conversation to read (default 24000).",
     )
     handoff_parser.add_argument(
-        "--home", help="Local ledger root; equivalent to SESSION_BRIDGE_HOME."
+        "--home", help="Local ledger root; equivalent to BRAID_HOME."
     )
     handoff_parser.add_argument(
         "--to-principal",

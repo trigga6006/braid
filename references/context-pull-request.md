@@ -1,6 +1,6 @@
 # Context Pull Request v1
 
-Status: developer preview in Session Bridge 0.5.x.
+Status: developer preview in Braid 0.5.x.
 
 A Context Pull Request (CPR) is a transport-neutral transaction for requesting
 the smallest reviewed semantic change needed from another independently owned

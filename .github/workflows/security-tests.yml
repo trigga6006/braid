@@ -34,11 +34,12 @@ jobs:
       - name: Verify every installed command
         shell: bash
         run: |
-          session-bridge --help
-          session-bridge-network --help
-          session-bridge-hub --help
-          session-bridge-team --help
           braid --help
+          braid-session --help
+          braid-ledger --help
+          braid-net --help
+          braid-hub --help
+          braid-team --help
           braid-mcp --help
 
   dependency-audit:
@@ -66,33 +67,33 @@ jobs:
       - name: Verify the source distribution is self-testing
         shell: bash
         run: |
-          mkdir -p /tmp/session-bridge-sdist
-          tar -xzf dist/*.tar.gz -C /tmp/session-bridge-sdist
-          source_root="$(find /tmp/session-bridge-sdist -mindepth 1 -maxdepth 1 -type d -print -quit)"
+          mkdir -p /tmp/braid-sdist
+          tar -xzf dist/*.tar.gz -C /tmp/braid-sdist
+          source_root="$(find /tmp/braid-sdist -mindepth 1 -maxdepth 1 -type d -print -quit)"
           (cd "$source_root" && python -m pytest -q)
       - run: python -m pip install --force-reinstall dist/*.whl
       - name: Verify every wheel entry point
-        run: session-bridge --help && session-bridge-network --help && session-bridge-hub --help && session-bridge-team --help && braid --help && braid-mcp --help
+        run: braid --help && braid-session --help && braid-ledger --help && braid-net --help && braid-hub --help && braid-team --help && braid-mcp --help
 
   container:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: docker compose config --quiet
-      - run: docker build --tag session-bridge:test .
+      - run: docker build --tag braid:test .
       - name: Boot and verify the hardened Team Hub image
         shell: bash
         run: |
-          docker volume create session-bridge-ci-data
-          docker run --detach --name session-bridge-ci \
+          docker volume create braid-ci-data
+          docker run --detach --name braid-ci \
             --read-only \
             --tmpfs /tmp:rw,noexec,nosuid,size=64m \
             --cap-drop ALL \
             --security-opt no-new-privileges \
-            --mount source=session-bridge-ci-data,target=/data \
+            --mount source=braid-ci-data,target=/data \
             --publish 127.0.0.1:8787:8787 \
-            --env SESSION_BRIDGE_HUB_PUBLIC_URL=http://127.0.0.1:8787 \
-            session-bridge:test \
+            --env BRAID_HUB_PUBLIC_URL=http://127.0.0.1:8787 \
+            braid:test \
             serve --bind 0.0.0.0 --port 8787 --allow-insecure-http \
             --bootstrap-team "CI Team" --bootstrap-project "CI Project"
           for attempt in $(seq 1 30); do
@@ -100,11 +101,11 @@ jobs:
               break
             fi
             if [ "$attempt" = 30 ]; then
-              docker logs session-bridge-ci
+              docker logs braid-ci
               exit 1
             fi
             sleep 1
           done
-          test "$(docker exec session-bridge-ci id -u)" = "10001"
-          docker exec session-bridge-ci session-bridge-hub --data-dir /data status
-          docker exec session-bridge-ci session-bridge-hub --data-dir /data verify
+          test "$(docker exec braid-ci id -u)" = "10001"
+          docker exec braid-ci braid-hub --data-dir /data status
+          docker exec braid-ci braid-hub --data-dir /data verify

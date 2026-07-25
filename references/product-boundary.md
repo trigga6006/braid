@@ -1,6 +1,6 @@
 # Product boundary
 
-Session Bridge should be evaluated against one question: can independently owned existing agents exchange the smallest useful, verifiable context change and reconcile it without losing provenance or hiding conflicts?
+Braid should be evaluated against one question: can independently owned existing agents exchange the smallest useful, verifiable context change and reconcile it without losing provenance or hiding conflicts?
 
 ## Owned
 

@@ -2,7 +2,7 @@
 
 ## Transport modes
 
-Public mode is the default. A temporary `cloudflared` process creates an outbound-only Quick Tunnel from a random `https://*.trycloudflare.com` URL to a listener bound only to `127.0.0.1`. The tunnel requires no Cloudflare account, login, DNS configuration, open router port, or persistent service. `setup --role host --yes` downloads a pinned helper release on first use and verifies its repository-pinned SHA-256 digest. Session Bridge does not implicitly execute an arbitrary `cloudflared` found on `PATH`; an explicit `SESSION_BRIDGE_CLOUDFLARED` path is treated as an administrator/user trust decision.
+Public mode is the default. A temporary `cloudflared` process creates an outbound-only Quick Tunnel from a random `https://*.trycloudflare.com` URL to a listener bound only to `127.0.0.1`. The tunnel requires no Cloudflare account, login, DNS configuration, open router port, or persistent service. `setup --role host --yes` downloads a pinned helper release on first use and verifies its repository-pinned SHA-256 digest. Braid does not implicitly execute an arbitrary `cloudflared` found on `PATH`; an explicit `BRAID_CLOUDFLARED` path is treated as an administrator/user trust decision.
 
 Role-aware setup keeps the footprint proportional: local mode downloads nothing, join mode needs only the pinned cryptography package, and host mode additionally needs `cloudflared`. `setup-public` remains as a backwards-compatible host alias.
 
@@ -11,7 +11,7 @@ Quick Tunnels are suitable for the current person-to-person proof of concept, no
 Direct mode uses a fresh ECDSA certificate, TLS 1.3, and certificate pinning. Use it for localhost, LAN, Tailscale, or another private network:
 
 ```text
-python network_bridge.py start --role host --transport direct --advertise <private-ip> --session <id> --context-file <path>
+braid net start --role host --transport direct --advertise <private-ip> --session <id> --context-file <path>
 ```
 
 Direct mode binds only the advertised address. It rejects public addresses and all-interface binds unless explicit unsafe overrides are supplied.
@@ -63,6 +63,6 @@ The listener accepts at most 32 concurrent workers, bounds rate-limit identities
 2. Confirm the join code is SB2, unused, and within its ten-minute pairing window.
 3. Run `status --id <id> --json` on either side and compare the safety code before approval.
 4. Quick Tunnel DNS may take several seconds to warm up; host startup waits for a verified `/v2/ready` response before returning the code.
-5. Check `~/.session-bridge/logs/<room-id>.log` and the room's `tunnel.log` for startup failures. Logs contain transport diagnostics, not context plaintext.
+5. Check `~/.braid/logs/<room-id>.log` and the room's `tunnel.log` for startup failures. Logs contain transport diagnostics, not context plaintext.
 6. Run `finish --id <id>` on both sides; use `purge` only to remove expired remnants.
 7. Install the pinned dependency from `requirements.txt` if the Python `cryptography` package is unavailable.

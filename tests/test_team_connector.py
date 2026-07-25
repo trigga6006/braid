@@ -134,28 +134,24 @@ class ConnectorHarness:
 class TeamConnectorTests(unittest.TestCase):
     def setUp(self) -> None:
         bridge.crypto_imports()
-        self.previous_home = os.environ.get("SESSION_BRIDGE_HOME")
-        self.previous_disable_keychain = os.environ.get(
-            "SESSION_BRIDGE_DISABLE_KEYCHAIN"
-        )
-        os.environ["SESSION_BRIDGE_DISABLE_KEYCHAIN"] = "1"
+        self.previous_home = os.environ.get("BRAID_HOME")
+        self.previous_disable_keychain = os.environ.get("BRAID_DISABLE_KEYCHAIN")
+        os.environ["BRAID_DISABLE_KEYCHAIN"] = "1"
 
     def tearDown(self) -> None:
         if self.previous_home is None:
-            os.environ.pop("SESSION_BRIDGE_HOME", None)
+            os.environ.pop("BRAID_HOME", None)
         else:
-            os.environ["SESSION_BRIDGE_HOME"] = self.previous_home
+            os.environ["BRAID_HOME"] = self.previous_home
         if self.previous_disable_keychain is None:
-            os.environ.pop("SESSION_BRIDGE_DISABLE_KEYCHAIN", None)
+            os.environ.pop("BRAID_DISABLE_KEYCHAIN", None)
         else:
-            os.environ["SESSION_BRIDGE_DISABLE_KEYCHAIN"] = (
-                self.previous_disable_keychain
-            )
+            os.environ["BRAID_DISABLE_KEYCHAIN"] = self.previous_disable_keychain
 
     def test_offline_signed_context_pack_reaches_receiver_quarantine(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            os.environ["SESSION_BRIDGE_HOME"] = str(root / "shared-security")
+            os.environ["BRAID_HOME"] = str(root / "shared-security")
             harness = ConnectorHarness(root)
             try:
                 alice = harness.enroll("Alice", root / "alice")
@@ -203,7 +199,7 @@ class TeamConnectorTests(unittest.TestCase):
     def test_context_pull_request_returns_only_bounded_semantic_change(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            os.environ["SESSION_BRIDGE_HOME"] = str(root / "shared-security")
+            os.environ["BRAID_HOME"] = str(root / "shared-security")
             harness = ConnectorHarness(root)
             try:
                 alice = harness.enroll("Alice", root / "alice")
@@ -291,7 +287,7 @@ class TeamConnectorTests(unittest.TestCase):
     def test_signed_context_pull_response_cannot_expand_request_selectors(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            os.environ["SESSION_BRIDGE_HOME"] = str(root / "shared-security")
+            os.environ["BRAID_HOME"] = str(root / "shared-security")
             harness = ConnectorHarness(root)
             try:
                 alice = harness.enroll("Alice", root / "alice")
@@ -356,7 +352,7 @@ class TeamConnectorTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            os.environ["SESSION_BRIDGE_HOME"] = str(root / "shared-security")
+            os.environ["BRAID_HOME"] = str(root / "shared-security")
             harness = ConnectorHarness(root)
             try:
                 alice = harness.enroll("Alice", root / "alice")
@@ -397,7 +393,7 @@ class TeamConnectorTests(unittest.TestCase):
     def test_authenticated_but_tampered_ciphertext_is_rejected_and_acked(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            os.environ["SESSION_BRIDGE_HOME"] = str(root / "shared-security")
+            os.environ["BRAID_HOME"] = str(root / "shared-security")
             harness = ConnectorHarness(root)
             try:
                 alice = harness.enroll("Alice", root / "alice")
@@ -441,7 +437,7 @@ class TeamConnectorTests(unittest.TestCase):
     def test_untrusted_sender_is_rejected_before_quarantine(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            os.environ["SESSION_BRIDGE_HOME"] = str(root / "shared-security")
+            os.environ["BRAID_HOME"] = str(root / "shared-security")
             harness = ConnectorHarness(root)
             try:
                 alice = harness.enroll("Alice", root / "alice")
@@ -468,7 +464,7 @@ class TeamConnectorTests(unittest.TestCase):
     def test_server_response_signature_and_request_binding_are_enforced(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            os.environ["SESSION_BRIDGE_HOME"] = str(root / "security")
+            os.environ["BRAID_HOME"] = str(root / "security")
             store = hub.HubStore(root / "hub")
             client = connector.HubClient(
                 "http://127.0.0.1:8787", store.server_principal
@@ -493,7 +489,7 @@ class TeamConnectorTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            os.environ["SESSION_BRIDGE_HOME"] = str(root / "security")
+            os.environ["BRAID_HOME"] = str(root / "security")
             harness = ConnectorHarness(root)
             try:
                 alice = harness.enroll("Alice", root / "alice")
@@ -519,7 +515,7 @@ class TeamConnectorTests(unittest.TestCase):
     def test_mailbox_key_persists_and_private_key_tamper_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            os.environ["SESSION_BRIDGE_HOME"] = str(root)
+            os.environ["BRAID_HOME"] = str(root)
             first = connector.load_or_create_mailbox_identity(root)
             second = connector.load_or_create_mailbox_identity(root)
             self.assertEqual(first, second)
@@ -533,7 +529,7 @@ class TeamConnectorTests(unittest.TestCase):
     def test_enrollment_retry_is_idempotent_for_same_alias(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            os.environ["SESSION_BRIDGE_HOME"] = str(root / "security")
+            os.environ["BRAID_HOME"] = str(root / "security")
             harness = ConnectorHarness(root)
             try:
                 enrollment = harness.store.create_enrollment(
@@ -552,7 +548,7 @@ class TeamConnectorTests(unittest.TestCase):
     def test_reviewed_head_publishes_only_once_to_project_agent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            os.environ["SESSION_BRIDGE_HOME"] = str(root / "shared-security")
+            os.environ["BRAID_HOME"] = str(root / "shared-security")
             harness = ConnectorHarness(root)
             try:
                 alice = harness.enroll("Alice", root / "alice")
@@ -599,7 +595,7 @@ class TeamConnectorTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            os.environ["SESSION_BRIDGE_HOME"] = str(root / "shared-security")
+            os.environ["BRAID_HOME"] = str(root / "shared-security")
             harness = ConnectorHarness(root)
             try:
                 alice = harness.enroll("Alice", root / "alice")

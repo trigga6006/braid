@@ -1,4 +1,4 @@
-# Session Bridge benchmark baselines
+# Braid benchmark baselines
 
 ## 0.3.0 Context Ledger baseline
 

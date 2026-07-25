@@ -1,4 +1,4 @@
 interface:
-  display_name: "Session Bridge"
+  display_name: "Braid"
   short_description: "Sync governed context across agent teams"
-  default_prompt: "Use $session-bridge to choose local, temporary-room, or durable team mode and exchange reviewed, recipient-minimized context with another agent."
+  default_prompt: "Use $braid to choose local, temporary-room, or durable team mode and exchange reviewed, recipient-minimized context with another agent."

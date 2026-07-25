@@ -1,4 +1,4 @@
-"""Self-hosted asynchronous mailbox for governed Session Bridge Context Packs.
+"""Self-hosted asynchronous mailbox for governed Braid Context Packs.
 
 The hub is deliberately blind infrastructure. It authenticates enrolled endpoint
 identities and routes opaque endpoint-encrypted envelopes, but it never imports,
@@ -38,10 +38,10 @@ from context_security import (
 )
 
 
-HUB_FORMAT = "session-bridge-team-hub/v1"
-ENROLLMENT_FORMAT = "session-bridge-team-enrollment/v1"
-REQUEST_FORMAT = "session-bridge-team-request/v1"
-ENVELOPE_FORMAT = "session-bridge-team-envelope/v1"
+HUB_FORMAT = "braid-team-hub/v1"
+ENROLLMENT_FORMAT = "braid-team-enrollment/v1"
+REQUEST_FORMAT = "braid-team-request/v1"
+ENVELOPE_FORMAT = "braid-team-envelope/v1"
 MAX_HTTP_BODY = 2_000_000
 MAX_ENVELOPE_BYTES = 1_500_000
 MAX_PAGE = 100
@@ -1273,7 +1273,7 @@ class BoundedHubServer(ThreadingHTTPServer):
 
 
 class HubHandler(BaseHTTPRequestHandler):
-    server_version = "SessionBridgeTeamHub/0.1"
+    server_version = "BraidTeamHub/0.1"
     protocol_version = "HTTP/1.1"
 
     @property
@@ -1348,7 +1348,7 @@ class HubHandler(BaseHTTPRequestHandler):
         # Behind the documented reverse proxy every request shares the proxy IP,
         # collapsing per-IP limits into one global bucket.  Only when explicitly
         # told the proxy is trusted, key on the forwarded client address instead.
-        if os.environ.get("SESSION_BRIDGE_HUB_TRUSTED_PROXY") == "1":
+        if os.environ.get("BRAID_HUB_TRUSTED_PROXY") == "1":
             forwarded = self.headers.get("X-Forwarded-For", "")
             candidate = forwarded.split(",")[0].strip()
             if candidate:
@@ -1440,12 +1440,8 @@ class HubHandler(BaseHTTPRequestHandler):
 
 
 def _default_data_dir() -> Path:
-    configured = os.environ.get("SESSION_BRIDGE_HUB_HOME")
-    return (
-        Path(configured).expanduser()
-        if configured
-        else Path.home() / ".session-bridge-hub"
-    )
+    configured = os.environ.get("BRAID_HUB_HOME")
+    return Path(configured).expanduser() if configured else Path.home() / ".braid-hub"
 
 
 def _json_print(value: Mapping[str, Any]) -> None:
@@ -1568,7 +1564,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--role", choices=("member", "project-agent", "admin"), default="member"
     )
     enrollment.add_argument(
-        "--server-url", default=os.environ.get("SESSION_BRIDGE_HUB_PUBLIC_URL")
+        "--server-url", default=os.environ.get("BRAID_HUB_PUBLIC_URL")
     )
     enrollment.add_argument("--expires-seconds", type=int, default=3600)
     enrollment.set_defaults(handler=command_enrollment)

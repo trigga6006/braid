@@ -3,13 +3,13 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "session-bridge"
+name = "braid"
 version = "0.5.0"
 description = "Governed context synchronization for existing Claude Code and Codex sessions"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
-authors = [{name = "Session Bridge contributors"}]
+authors = [{name = "Braid contributors"}]
 keywords = ["agents", "context", "codex", "claude", "a2a", "mcp"]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -21,22 +21,24 @@ classifiers = [
 dependencies = ["cryptography==48.0.1"]
 
 [project.urls]
-Homepage = "https://github.com/trigga6006/session-bridge"
-Repository = "https://github.com/trigga6006/session-bridge"
-Issues = "https://github.com/trigga6006/session-bridge/issues"
+Homepage = "https://github.com/trigga6006/braid"
+Repository = "https://github.com/trigga6006/braid"
+Issues = "https://github.com/trigga6006/braid/issues"
 
 [project.scripts]
-session-bridge = "session_bridge:main"
-session-bridge-network = "network_bridge:main"
-session-bridge-hub = "team_hub:main"
-session-bridge-team = "team_connector:main"
-braid = "context_bridge:main"
+braid = "braid_cli:main"
+braid-session = "braid_session:main"
+braid-ledger = "context_bridge:main"
+braid-net = "network_bridge:main"
+braid-hub = "team_hub:main"
+braid-team = "team_connector:main"
 braid-mcp = "context_mcp:main"
 
 [tool.setuptools]
 package-dir = {"" = "scripts"}
 py-modules = [
-  "session_bridge", "network_bridge", "context_adapters", "context_bridge",
+  "braid_cli", "braid_session",
+  "network_bridge", "context_adapters", "context_bridge",
   "context_exchange", "context_handoff",
   "context_extract", "context_mcp", "context_model", "context_policy",
   "context_security", "context_store",

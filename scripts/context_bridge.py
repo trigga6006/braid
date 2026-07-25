@@ -69,15 +69,15 @@ def cmd_extract(args: argparse.Namespace) -> None:
             _local(args.markdown).read_text(encoding="utf-8")
         )
     else:
-        import session_bridge
+        import braid_session
 
-        session = session_bridge.resolve_session(args.session, args.provider)
+        session = braid_session.resolve_session(args.session, args.provider)
         if session.transcript is None:
             raise ValueError("The selected session has no locally readable transcript.")
         messages = (
-            session_bridge.extract_codex(session.transcript)
+            braid_session.extract_codex(session.transcript)
             if session.provider == "codex"
-            else session_bridge.extract_claude(session.transcript)
+            else braid_session.extract_claude(session.transcript)
         )
         claims = extract_message_claims(messages)
     result = {"claims": claims, "count": len(claims), "requires_review": True}
@@ -343,7 +343,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--home",
-        help="Local ledger state root; equivalent to SESSION_BRIDGE_HOME.",
+        help="Local ledger state root; equivalent to BRAID_HOME.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
     commands = parser.add_subparsers(dest="cmd", required=True)

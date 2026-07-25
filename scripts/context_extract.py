@@ -333,7 +333,7 @@ def extract_markdown(
 
 
 def extract_messages(messages: Sequence[Any]) -> ExtractionResult:
-    """Extract staged candidates from ``session_bridge.Message``-compatible values.
+    """Extract staged candidates from ``braid_session.Message``-compatible values.
 
     Only ``role``, ``text``, and optional ``timestamp`` are read.  The resulting
     source references contain hashes and offsets, never the original event text.
@@ -469,5 +469,5 @@ def extract_markdown_claims(
 
 
 def extract_message_claims(messages: Sequence[Any]) -> list[dict[str, Any]]:
-    """Convenience integration API for session_bridge messages and Context Pack v0.1."""
+    """Convenience integration API for braid_session messages and Context Pack v0.1."""
     return to_context_claims(extract_messages(messages))

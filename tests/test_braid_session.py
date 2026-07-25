@@ -9,7 +9,7 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 sys.path.insert(0, str(SCRIPTS))
 
-import session_bridge as bridge  # noqa: E402
+import braid_session as bridge  # noqa: E402
 
 
 class SessionTranscriptTests(unittest.TestCase):

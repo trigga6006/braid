@@ -84,7 +84,7 @@ def sample(count: int) -> dict[str, Any]:
 def run(sizes: tuple[int, ...] = (10, 100, 500), iterations: int = 3) -> dict[str, Any]:
     if iterations < 1 or any(size < 1 or size > 500 for size in sizes):
         raise ValueError("Use 1-500 claims and at least one iteration.")
-    os.environ.setdefault("SESSION_BRIDGE_DISABLE_KEYCHAIN", "1")
+    os.environ.setdefault("BRAID_DISABLE_KEYCHAIN", "1")
     network_bridge.crypto_imports()
     results: dict[str, Any] = {}
     for size in sizes:
@@ -101,7 +101,7 @@ def run(sizes: tuple[int, ...] = (10, 100, 500), iterations: int = 3) -> dict[st
             "samples": samples,
         }
     return {
-        "schema": "session-bridge-lifecycle-benchmark/v1",
+        "schema": "braid-lifecycle-benchmark/v1",
         "methodology": {
             "lifecycle": "stage-review-approve-commit-export-quarantine-review-accept",
             "allocation": "Python tracemalloc peak; excludes process RSS and tunnel/network costs",

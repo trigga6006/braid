@@ -43,7 +43,7 @@ from context_security import (
 )
 
 
-LEDGER_FORMAT = "session-bridge-context-ledger/v1"
+LEDGER_FORMAT = "braid-context-ledger/v1"
 DISCLOSURE_FORMAT = "context-disclosure/v1"
 MAX_IMPORT_BYTES = 2_000_000
 AUDIT_TRANSITION_ACTIONS = frozenset(
@@ -278,10 +278,7 @@ class ContextLedger:
     ) -> None:
         project = _safe_project(project)
         base = (
-            home
-            or Path(
-                os.environ.get("SESSION_BRIDGE_HOME", Path.home() / ".session-bridge")
-            )
+            home or Path(os.environ.get("BRAID_HOME", Path.home() / ".braid"))
         ).expanduser()
         self.project = project
         self.recipient_identity_path = base / "recipient-identity.json"
@@ -1070,7 +1067,7 @@ class ContextLedger:
             [
                 {
                     "principal_id": identity.key_id,
-                    "display_name": "Local Session Bridge identity",
+                    "display_name": "Local Braid identity",
                     "role": "owner",
                 }
             ],

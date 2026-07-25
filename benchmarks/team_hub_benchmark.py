@@ -90,14 +90,14 @@ def run(messages: int, workers: int, payload_bytes: int) -> dict[str, Any]:
     if workers < 1 or workers > 64:
         raise ValueError("workers must be between 1 and 64")
     # Resolve the repository-pinned crypto before the isolated benchmark home
-    # intentionally hides the user's normal Session Bridge dependency cache.
+    # intentionally hides the user's normal Braid dependency cache.
     bridge.crypto_imports()
-    with tempfile.TemporaryDirectory(prefix="session-bridge-team-hub-") as directory:
+    with tempfile.TemporaryDirectory(prefix="braid-team-hub-") as directory:
         root = Path(directory)
-        previous_home = os.environ.get("SESSION_BRIDGE_HOME")
-        previous_keychain = os.environ.get("SESSION_BRIDGE_DISABLE_KEYCHAIN")
-        os.environ["SESSION_BRIDGE_HOME"] = str(root / "security")
-        os.environ["SESSION_BRIDGE_DISABLE_KEYCHAIN"] = "1"
+        previous_home = os.environ.get("BRAID_HOME")
+        previous_keychain = os.environ.get("BRAID_DISABLE_KEYCHAIN")
+        os.environ["BRAID_HOME"] = str(root / "security")
+        os.environ["BRAID_DISABLE_KEYCHAIN"] = "1"
         try:
             store = hub.HubStore(root / "hub")
             project = store.initialize("Benchmark Team", "Benchmark Project")
@@ -155,7 +155,7 @@ def run(messages: int, workers: int, payload_bytes: int) -> dict[str, Any]:
             )
             audit = store.verify_audit()
             return {
-                "format": "session-bridge-team-hub-benchmark/v1",
+                "format": "braid-team-hub-benchmark/v1",
                 "environment": {
                     "python": platform.python_version(),
                     "platform": platform.platform(),
@@ -174,13 +174,13 @@ def run(messages: int, workers: int, payload_bytes: int) -> dict[str, Any]:
             }
         finally:
             if previous_home is None:
-                os.environ.pop("SESSION_BRIDGE_HOME", None)
+                os.environ.pop("BRAID_HOME", None)
             else:
-                os.environ["SESSION_BRIDGE_HOME"] = previous_home
+                os.environ["BRAID_HOME"] = previous_home
             if previous_keychain is None:
-                os.environ.pop("SESSION_BRIDGE_DISABLE_KEYCHAIN", None)
+                os.environ.pop("BRAID_DISABLE_KEYCHAIN", None)
             else:
-                os.environ["SESSION_BRIDGE_DISABLE_KEYCHAIN"] = previous_keychain
+                os.environ["BRAID_DISABLE_KEYCHAIN"] = previous_keychain
 
 
 def main() -> int:

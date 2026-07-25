@@ -1,4 +1,4 @@
-"""Deterministic benchmark of the real Session Bridge context implementation."""
+"""Deterministic benchmark of the real Braid context implementation."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-import session_bridge  # noqa: E402
+import braid_session  # noqa: E402
 from context_extract import extract_message_claims  # noqa: E402
 from context_model import canonical_json, create_revision, make_claim, plan_merge  # noqa: E402
 from context_policy import plan_disclosure  # noqa: E402
@@ -31,10 +31,10 @@ ANCHORS = (
 )
 
 
-def _messages(noise: int) -> list[session_bridge.Message]:
+def _messages(noise: int) -> list[braid_session.Message]:
     chatter = ("Thanks!", "Sounds good.", "Acknowledged.", "OK", "Great.")
     values = [
-        session_bridge.Message(
+        braid_session.Message(
             "user", chatter[index % len(chatter)], "2026-07-22T00:00:00Z"
         )
         for index in range(noise)
@@ -42,7 +42,7 @@ def _messages(noise: int) -> list[session_bridge.Message]:
     for index, statement in enumerate(ANCHORS):
         values.insert(
             (index + 1) * max(1, len(values) // 5),
-            session_bridge.Message(
+            braid_session.Message(
                 "assistant", statement, f"2026-07-22T00:0{index}:00Z"
             ),
         )
@@ -134,8 +134,8 @@ def _conflict_gate() -> bool:
 
 
 def _signed_round_trip(claims: list[dict]) -> bool:
-    previous = os.environ.get("SESSION_BRIDGE_DISABLE_KEYCHAIN")
-    os.environ["SESSION_BRIDGE_DISABLE_KEYCHAIN"] = "1"
+    previous = os.environ.get("BRAID_DISABLE_KEYCHAIN")
+    os.environ["BRAID_DISABLE_KEYCHAIN"] = "1"
     try:
         with tempfile.TemporaryDirectory() as home:
             root = Path(home)
@@ -160,9 +160,9 @@ def _signed_round_trip(claims: list[dict]) -> bool:
             return len(accepted["claims"]) == len(claims) and receiver.verify_audit()
     finally:
         if previous is None:
-            os.environ.pop("SESSION_BRIDGE_DISABLE_KEYCHAIN", None)
+            os.environ.pop("BRAID_DISABLE_KEYCHAIN", None)
         else:
-            os.environ["SESSION_BRIDGE_DISABLE_KEYCHAIN"] = previous
+            os.environ["BRAID_DISABLE_KEYCHAIN"] = previous
 
 
 def run(sizes: tuple[int, ...] = (100, 1_000, 5_000)) -> dict:
@@ -223,7 +223,7 @@ def run(sizes: tuple[int, ...] = (100, 1_000, 5_000)) -> dict:
     }
     latencies = [row["elapsed_ms"] for row in rows]
     return {
-        "benchmark": "session-bridge-product/v1",
+        "benchmark": "braid-product/v1",
         "implementation": "real",
         "gates": gates,
         "hard_gates_passed": all(gates.values()),
@@ -238,7 +238,7 @@ def run(sizes: tuple[int, ...] = (100, 1_000, 5_000)) -> dict:
 
 def markdown(report: dict) -> str:
     lines = [
-        "# Session Bridge product benchmark",
+        "# Braid product benchmark",
         "",
         f"Hard gates: **{'PASS' if report['hard_gates_passed'] else 'FAIL'}**",
         "",

@@ -10,7 +10,7 @@
 - [Operate a single-node Hub](#operate-a-single-node-hub)
 - [Deliberate first-release limits](#deliberate-first-release-limits)
 
-Team Hub turns Session Bridge's temporary peer exchange into an asynchronous,
+Team Hub turns Braid's temporary peer exchange into an asynchronous,
 self-hosted team substrate. It complements an issue tracker, knowledge graph,
 or company knowledge base; it does not replace one. The canonical durable unit
 remains the signed Context Ledger disclosure.
@@ -165,7 +165,7 @@ where team policy permits transport of a changed, already reviewed revision.
 Back up the complete Hub data volume, not only `hub.sqlite3`, because
 `server-identity.json` is the identity pinned by enrolled endpoints. For a
 simple consistent snapshot, stop the Compose service, archive the named
-`session-bridge-hub-data` volume with an operator-controlled backup tool, then
+`braid-hub-data` volume with an operator-controlled backup tool, then
 restart it. Encrypt backups, restrict access, test restoration on an isolated
 host, and run `verify` after restore. Restoring the database without the same
 server identity makes existing endpoint pins fail closed.

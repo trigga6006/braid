@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 import context_extract as extract
 import context_model
-import session_bridge
+import braid_session
 
 
 class ContextExtractTests(unittest.TestCase):
@@ -42,12 +42,12 @@ class ContextExtractTests(unittest.TestCase):
 
     def test_messages_are_supported_and_source_does_not_retain_raw_event(self):
         messages = [
-            session_bridge.Message(
+            braid_session.Message(
                 "assistant",
                 "The migration is implemented and tests are passing.",
                 "2026-07-22T00:00:00Z",
             ),
-            session_bridge.Message(
+            braid_session.Message(
                 "user", "What evidence supports the rollback?", "2026-07-22T00:01:00Z"
             ),
         ]
@@ -62,7 +62,7 @@ class ContextExtractTests(unittest.TestCase):
     def test_credentials_block_entire_event_without_leaking_value(self):
         secret = "sk" + "-abcdefghijklmnopqrstuvwxyz123456"
         result = extract.extract_messages(
-            [session_bridge.Message("assistant", f"Decision: use {secret}")]
+            [braid_session.Message("assistant", f"Decision: use {secret}")]
         )
         self.assertEqual(result.candidates, ())
         self.assertEqual(
@@ -119,16 +119,16 @@ class ContextExtractTests(unittest.TestCase):
 
     def test_adapter_uses_deterministic_epoch_for_missing_or_bad_timestamp(self):
         claims = extract.extract_message_claims(
-            [session_bridge.Message("assistant", "A fact.", "not-a-time")]
+            [braid_session.Message("assistant", "A fact.", "not-a-time")]
         )
         self.assertEqual(claims[0]["freshness"]["observed_at"], "1970-01-01T00:00:00Z")
 
     def test_low_signal_chat_and_exact_duplicates_do_not_inflate_context(self):
         messages = [
-            session_bridge.Message("user", "Thanks!"),
-            session_bridge.Message("assistant", "Decision: API retries are 3."),
-            session_bridge.Message("user", "Decision: API retries are 3."),
-            session_bridge.Message("assistant", "Sounds good."),
+            braid_session.Message("user", "Thanks!"),
+            braid_session.Message("assistant", "Decision: API retries are 3."),
+            braid_session.Message("user", "Decision: API retries are 3."),
+            braid_session.Message("assistant", "Sounds good."),
         ]
         result = extract.extract_messages(messages)
         self.assertEqual(
@@ -139,8 +139,8 @@ class ContextExtractTests(unittest.TestCase):
     def test_explicit_correction_links_same_topic_as_supersession(self):
         claims = extract.extract_message_claims(
             [
-                session_bridge.Message("assistant", "Decision: API retries are 3."),
-                session_bridge.Message(
+                braid_session.Message("assistant", "Decision: API retries are 3."),
+                braid_session.Message(
                     "assistant",
                     "Correction: API retries are 5; the prior decision is superseded.",
                 ),

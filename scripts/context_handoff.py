@@ -34,11 +34,11 @@ import context_extract
 from context_extract import extract_messages, to_context_claims
 from context_security import identity_principal, load_or_create_identity
 from context_store import ContextLedger, _lock, _safe_project
-import session_bridge
+import braid_session
 from terminal_safe import terminal_safe
 
 
-HANDOFF_FORMAT = "session-bridge-handoff/v1"
+HANDOFF_FORMAT = "braid-handoff/v1"
 # A handoff is "catch the other session up on what we just did", not an
 # archive.  A tight default keeps the capture inside the extractor's reviewable
 # candidate budget and keeps the printed digest to roughly one screen.
@@ -124,9 +124,9 @@ def _is_local_path(value: Path | str) -> bool:
 def _local_session_roots() -> list[Path]:
     """Return the session stores owned by the current OS user."""
     return [
-        session_bridge.codex_home(),
-        session_bridge.claude_home(),
-        *session_bridge.claude_desktop_roots(),
+        braid_session.codex_home(),
+        braid_session.claude_home(),
+        *braid_session.claude_desktop_roots(),
     ]
 
 
@@ -350,18 +350,18 @@ def run_handoff(
     if budget <= 0:
         raise ValueError("--max-chars must be a positive number of characters.")
 
-    session = session_bridge.resolve_session(source, provider)
+    session = braid_session.resolve_session(source, provider)
     assert_source_is_local(session)
     ledger = _open_local_ledger(project, home)
     status = assert_destination_is_same_principal(ledger, destination_principal)
 
     reader = (
-        session_bridge.extract_codex
+        braid_session.extract_codex
         if session.provider == "codex"
-        else session_bridge.extract_claude
+        else braid_session.extract_claude
     )
     messages = reader(session.transcript)
-    chosen, omitted = session_bridge.limited_messages(messages, budget)
+    chosen, omitted = braid_session.limited_messages(messages, budget)
     try:
         extraction = extract_messages(chosen)
         claims = to_context_claims(extraction)
@@ -465,11 +465,11 @@ def render_handoff(result: dict[str, Any]) -> str:
     captured = result["captured"]
     rule = "=" * 72
     if result["dry_run"]:
-        headline = "SESSION BRIDGE - LOCAL HANDOFF (DRY RUN, nothing committed)"
+        headline = "BRAID - LOCAL HANDOFF (DRY RUN, nothing committed)"
     elif result["committed"]:
-        headline = "SESSION BRIDGE - LOCAL HANDOFF (committed)"
+        headline = "BRAID - LOCAL HANDOFF (committed)"
     else:
-        headline = "SESSION BRIDGE - LOCAL HANDOFF (nothing to capture)"
+        headline = "BRAID - LOCAL HANDOFF (nothing to capture)"
     lines = [
         rule,
         f" {headline}",

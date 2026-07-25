@@ -1,4 +1,4 @@
-"""On-call incident handoff built entirely from existing Session Bridge parts.
+"""On-call incident handoff built entirely from existing Braid parts.
 
 The one job this module serves is the 3am handoff: an on-call agent asks a peer
 endpoint for the confirmed facts, ruled-out hypotheses, open actions, blockers,
@@ -38,7 +38,7 @@ import network_bridge as bridge
 from terminal_safe import terminal_safe as _safe
 
 
-WORKFLOW_FORMAT = "session-bridge-incident-workflow/v1"
+WORKFLOW_FORMAT = "braid-incident-workflow/v1"
 PURPOSE_PREFIX = "Incident handoff"
 SEVERITIES = ("sev1", "sev2", "sev3")
 DEFAULT_SEVERITY = "sev2"

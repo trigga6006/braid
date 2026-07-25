@@ -40,7 +40,7 @@ class FakeSession:
 
 def append_event_in_process(arguments: tuple[str, int]) -> int:
     directory_text, index = arguments
-    os.environ["SESSION_BRIDGE_DISABLE_KEYCHAIN"] = "1"
+    os.environ["BRAID_DISABLE_KEYCHAIN"] = "1"
     directory = Path(directory_text)
     stale_state = {"next_sequence": 1, "event_bytes": 0, "participants": {}}
     return int(
@@ -56,7 +56,7 @@ def open_context_pack_in_process(
     arguments: tuple[bytes, str, str, int, dict[str, str], str],
 ) -> dict[str, str]:
     key, room_id, peer_id, counter, envelope, recipient = arguments
-    os.environ["SESSION_BRIDGE_DISABLE_KEYCHAIN"] = "1"
+    os.environ["BRAID_DISABLE_KEYCHAIN"] = "1"
     request = bridge.open_json(
         key,
         envelope,
@@ -72,18 +72,14 @@ def open_context_pack_in_process(
 
 class NetworkBridgeTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.previous_disable_keychain = os.environ.get(
-            "SESSION_BRIDGE_DISABLE_KEYCHAIN"
-        )
-        os.environ["SESSION_BRIDGE_DISABLE_KEYCHAIN"] = "1"
+        self.previous_disable_keychain = os.environ.get("BRAID_DISABLE_KEYCHAIN")
+        os.environ["BRAID_DISABLE_KEYCHAIN"] = "1"
 
     def tearDown(self) -> None:
         if self.previous_disable_keychain is None:
-            os.environ.pop("SESSION_BRIDGE_DISABLE_KEYCHAIN", None)
+            os.environ.pop("BRAID_DISABLE_KEYCHAIN", None)
         else:
-            os.environ["SESSION_BRIDGE_DISABLE_KEYCHAIN"] = (
-                self.previous_disable_keychain
-            )
+            os.environ["BRAID_DISABLE_KEYCHAIN"] = self.previous_disable_keychain
 
     @staticmethod
     def post_json(
@@ -277,7 +273,7 @@ class NetworkBridgeTests(unittest.TestCase):
 
     def test_context_digest_is_verified_before_acceptance(self) -> None:
         context = {
-            "format": "session-bridge-context/v1",
+            "format": "braid-context/v1",
             "kind": "curated",
             "purpose": "Verify context integrity",
             "detail": "brief",
@@ -466,9 +462,9 @@ class NetworkBridgeTests(unittest.TestCase):
         self.assertEqual(len(digest), 64)
 
     def test_private_cloudflared_is_reverified_before_reuse(self) -> None:
-        previous_home = os.environ.get("SESSION_BRIDGE_HOME")
+        previous_home = os.environ.get("BRAID_HOME")
         with tempfile.TemporaryDirectory() as home:
-            os.environ["SESSION_BRIDGE_HOME"] = home
+            os.environ["BRAID_HOME"] = home
             binary = Path(home) / "bin" / "cloudflared"
             binary.parent.mkdir(parents=True)
             binary.write_bytes(b"verified helper")
@@ -488,15 +484,15 @@ class NetworkBridgeTests(unittest.TestCase):
                     self.assertFalse(bridge.verified_private_cloudflared(binary))
             finally:
                 if previous_home is None:
-                    os.environ.pop("SESSION_BRIDGE_HOME", None)
+                    os.environ.pop("BRAID_HOME", None)
                 else:
-                    os.environ["SESSION_BRIDGE_HOME"] = previous_home
+                    os.environ["BRAID_HOME"] = previous_home
 
     def test_unverified_path_cloudflared_is_never_executed_implicitly(self) -> None:
         with tempfile.TemporaryDirectory() as home:
-            previous = os.environ.get("SESSION_BRIDGE_HOME")
-            configured = os.environ.pop("SESSION_BRIDGE_CLOUDFLARED", None)
-            os.environ["SESSION_BRIDGE_HOME"] = home
+            previous = os.environ.get("BRAID_HOME")
+            configured = os.environ.pop("BRAID_CLOUDFLARED", None)
+            os.environ["BRAID_HOME"] = home
             try:
                 with mock.patch.object(
                     bridge.shutil,
@@ -507,11 +503,11 @@ class NetworkBridgeTests(unittest.TestCase):
                 which.assert_not_called()
             finally:
                 if previous is None:
-                    os.environ.pop("SESSION_BRIDGE_HOME", None)
+                    os.environ.pop("BRAID_HOME", None)
                 else:
-                    os.environ["SESSION_BRIDGE_HOME"] = previous
+                    os.environ["BRAID_HOME"] = previous
                 if configured is not None:
-                    os.environ["SESSION_BRIDGE_CLOUDFLARED"] = configured
+                    os.environ["BRAID_CLOUDFLARED"] = configured
 
     def test_tunnel_process_stops_when_startup_state_save_fails(self) -> None:
         class FakeProcess:
@@ -559,9 +555,9 @@ class NetworkBridgeTests(unittest.TestCase):
 
     def test_watch_host_remembers_cursor_and_say_routes_to_peer(self) -> None:
         bridge.crypto_imports()
-        previous_home = os.environ.get("SESSION_BRIDGE_HOME")
+        previous_home = os.environ.get("BRAID_HOME")
         with tempfile.TemporaryDirectory() as home:
-            os.environ["SESSION_BRIDGE_HOME"] = home
+            os.environ["BRAID_HOME"] = home
             room_id = "collaboration-room"
             directory = bridge.room_dir(room_id)
             (directory / "events").mkdir(parents=True)
@@ -655,14 +651,14 @@ class NetworkBridgeTests(unittest.TestCase):
                 self.assertEqual(second["cursor"], 3)
             finally:
                 if previous_home is None:
-                    os.environ.pop("SESSION_BRIDGE_HOME", None)
+                    os.environ.pop("BRAID_HOME", None)
                 else:
-                    os.environ["SESSION_BRIDGE_HOME"] = previous_home
+                    os.environ["BRAID_HOME"] = previous_home
 
     def test_watch_and_say_route_through_join_connection(self) -> None:
-        previous_home = os.environ.get("SESSION_BRIDGE_HOME")
+        previous_home = os.environ.get("BRAID_HOME")
         with tempfile.TemporaryDirectory() as home:
-            os.environ["SESSION_BRIDGE_HOME"] = home
+            os.environ["BRAID_HOME"] = home
             path = Path(home) / "connections" / "join-connection.json"
             connection = {
                 "connection_id": "join-connection",
@@ -733,19 +729,19 @@ class NetworkBridgeTests(unittest.TestCase):
                 self.assertEqual(watched["cursor"], 2)
             finally:
                 if previous_home is None:
-                    os.environ.pop("SESSION_BRIDGE_HOME", None)
+                    os.environ.pop("BRAID_HOME", None)
                 else:
-                    os.environ["SESSION_BRIDGE_HOME"] = previous_home
+                    os.environ["BRAID_HOME"] = previous_home
 
     def test_channel_request_recovers_an_accepted_request_after_response_loss(
         self,
     ) -> None:
         bridge.crypto_imports()
-        previous_home = os.environ.get("SESSION_BRIDGE_HOME")
-        previous_disable_keychain = os.environ.get("SESSION_BRIDGE_DISABLE_KEYCHAIN")
+        previous_home = os.environ.get("BRAID_HOME")
+        previous_disable_keychain = os.environ.get("BRAID_DISABLE_KEYCHAIN")
         with tempfile.TemporaryDirectory() as home:
-            os.environ["SESSION_BRIDGE_HOME"] = home
-            os.environ["SESSION_BRIDGE_DISABLE_KEYCHAIN"] = "1"
+            os.environ["BRAID_HOME"] = home
+            os.environ["BRAID_DISABLE_KEYCHAIN"] = "1"
             key = b"k" * 32
             path = Path(home) / "connections" / "recover.json"
             path.parent.mkdir()
@@ -765,7 +761,7 @@ class NetworkBridgeTests(unittest.TestCase):
                     bridge,
                     "request_json",
                     side_effect=SystemExit(
-                        "Could not reach the Session Bridge host: lost response"
+                        "Could not reach the Braid host: lost response"
                     ),
                 ):
                     with self.assertRaises(SystemExit):
@@ -802,23 +798,21 @@ class NetworkBridgeTests(unittest.TestCase):
                 self.assertEqual(final["recv_counter"], 1)
             finally:
                 if previous_home is None:
-                    os.environ.pop("SESSION_BRIDGE_HOME", None)
+                    os.environ.pop("BRAID_HOME", None)
                 else:
-                    os.environ["SESSION_BRIDGE_HOME"] = previous_home
+                    os.environ["BRAID_HOME"] = previous_home
                 if previous_disable_keychain is None:
-                    os.environ.pop("SESSION_BRIDGE_DISABLE_KEYCHAIN", None)
+                    os.environ.pop("BRAID_DISABLE_KEYCHAIN", None)
                 else:
-                    os.environ["SESSION_BRIDGE_DISABLE_KEYCHAIN"] = (
-                        previous_disable_keychain
-                    )
+                    os.environ["BRAID_DISABLE_KEYCHAIN"] = previous_disable_keychain
 
     def test_channel_request_discards_terminal_rejection_and_advances(self) -> None:
         bridge.crypto_imports()
-        previous_home = os.environ.get("SESSION_BRIDGE_HOME")
-        previous_disable_keychain = os.environ.get("SESSION_BRIDGE_DISABLE_KEYCHAIN")
+        previous_home = os.environ.get("BRAID_HOME")
+        previous_disable_keychain = os.environ.get("BRAID_DISABLE_KEYCHAIN")
         with tempfile.TemporaryDirectory() as home:
-            os.environ["SESSION_BRIDGE_HOME"] = home
-            os.environ["SESSION_BRIDGE_DISABLE_KEYCHAIN"] = "1"
+            os.environ["BRAID_HOME"] = home
+            os.environ["BRAID_DISABLE_KEYCHAIN"] = "1"
             key = b"r" * 32
             path = Path(home) / "connections" / "reject.json"
             path.parent.mkdir()
@@ -876,26 +870,24 @@ class NetworkBridgeTests(unittest.TestCase):
                 self.assertNotIn("pending_request", bridge.load_json(path))
             finally:
                 if previous_home is None:
-                    os.environ.pop("SESSION_BRIDGE_HOME", None)
+                    os.environ.pop("BRAID_HOME", None)
                 else:
-                    os.environ["SESSION_BRIDGE_HOME"] = previous_home
+                    os.environ["BRAID_HOME"] = previous_home
                 if previous_disable_keychain is None:
-                    os.environ.pop("SESSION_BRIDGE_DISABLE_KEYCHAIN", None)
+                    os.environ.pop("BRAID_DISABLE_KEYCHAIN", None)
                 else:
-                    os.environ["SESSION_BRIDGE_DISABLE_KEYCHAIN"] = (
-                        previous_disable_keychain
-                    )
+                    os.environ["BRAID_DISABLE_KEYCHAIN"] = previous_disable_keychain
 
     def test_complete_pair_approve_cross_process_pack_replay_and_close_flow(
         self,
     ) -> None:
         # Load the verified dependency before isolating bridge state in a temporary home.
         bridge.crypto_imports()
-        previous_home = os.environ.get("SESSION_BRIDGE_HOME")
-        previous_disable_keychain = os.environ.get("SESSION_BRIDGE_DISABLE_KEYCHAIN")
+        previous_home = os.environ.get("BRAID_HOME")
+        previous_disable_keychain = os.environ.get("BRAID_DISABLE_KEYCHAIN")
         with tempfile.TemporaryDirectory() as home:
-            os.environ["SESSION_BRIDGE_HOME"] = home
-            os.environ["SESSION_BRIDGE_DISABLE_KEYCHAIN"] = "1"
+            os.environ["BRAID_HOME"] = home
+            os.environ["BRAID_DISABLE_KEYCHAIN"] = "1"
             room_id = "integration-room"
             directory = bridge.room_dir(room_id)
             directory.mkdir()
@@ -904,7 +896,7 @@ class NetworkBridgeTests(unittest.TestCase):
             host_private, host_public = bridge.generate_exchange_keypair()
             pair_secret = b"p" * 32
             host_context = {
-                "format": "session-bridge-context/v1",
+                "format": "braid-context/v1",
                 "kind": "curated",
                 "purpose": "Compare advice",
                 "detail": "brief",
@@ -1222,15 +1214,13 @@ class NetworkBridgeTests(unittest.TestCase):
                 server_thread.join(timeout=5)
                 bridge.safe_remove_room(directory)
                 if previous_home is None:
-                    os.environ.pop("SESSION_BRIDGE_HOME", None)
+                    os.environ.pop("BRAID_HOME", None)
                 else:
-                    os.environ["SESSION_BRIDGE_HOME"] = previous_home
+                    os.environ["BRAID_HOME"] = previous_home
                 if previous_disable_keychain is None:
-                    os.environ.pop("SESSION_BRIDGE_DISABLE_KEYCHAIN", None)
+                    os.environ.pop("BRAID_DISABLE_KEYCHAIN", None)
                 else:
-                    os.environ["SESSION_BRIDGE_DISABLE_KEYCHAIN"] = (
-                        previous_disable_keychain
-                    )
+                    os.environ["BRAID_DISABLE_KEYCHAIN"] = previous_disable_keychain
 
 
 if __name__ == "__main__":

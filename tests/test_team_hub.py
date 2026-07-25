@@ -31,23 +31,19 @@ class TeamHubTests(unittest.TestCase):
         # Load the repository-pinned crypto before each isolated bridge home hides
         # the normal private dependency location.
         bridge.crypto_imports()
-        self.previous_home = os.environ.get("SESSION_BRIDGE_HOME")
-        self.previous_disable_keychain = os.environ.get(
-            "SESSION_BRIDGE_DISABLE_KEYCHAIN"
-        )
-        os.environ["SESSION_BRIDGE_DISABLE_KEYCHAIN"] = "1"
+        self.previous_home = os.environ.get("BRAID_HOME")
+        self.previous_disable_keychain = os.environ.get("BRAID_DISABLE_KEYCHAIN")
+        os.environ["BRAID_DISABLE_KEYCHAIN"] = "1"
 
     def tearDown(self) -> None:
         if self.previous_home is None:
-            os.environ.pop("SESSION_BRIDGE_HOME", None)
+            os.environ.pop("BRAID_HOME", None)
         else:
-            os.environ["SESSION_BRIDGE_HOME"] = self.previous_home
+            os.environ["BRAID_HOME"] = self.previous_home
         if self.previous_disable_keychain is None:
-            os.environ.pop("SESSION_BRIDGE_DISABLE_KEYCHAIN", None)
+            os.environ.pop("BRAID_DISABLE_KEYCHAIN", None)
         else:
-            os.environ["SESSION_BRIDGE_DISABLE_KEYCHAIN"] = (
-                self.previous_disable_keychain
-            )
+            os.environ["BRAID_DISABLE_KEYCHAIN"] = self.previous_disable_keychain
 
     @staticmethod
     def enrollment_request(
@@ -139,7 +135,7 @@ class TeamHubTests(unittest.TestCase):
 
     def test_initialize_is_idempotent_and_enrollment_is_identity_bound(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            os.environ["SESSION_BRIDGE_HOME"] = directory
+            os.environ["BRAID_HOME"] = directory
             store = hub.HubStore(Path(directory) / "hub")
             first = store.initialize("Team Omni", "Phoenix")
             second = store.initialize("Team Omni", "Phoenix")
@@ -176,7 +172,7 @@ class TeamHubTests(unittest.TestCase):
 
     def test_used_enrollment_rejects_another_endpoint(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            os.environ["SESSION_BRIDGE_HOME"] = directory
+            os.environ["BRAID_HOME"] = directory
             store = hub.HubStore(Path(directory) / "hub")
             project = store.initialize("Team Omni", "Phoenix")
             enrollment = store.create_enrollment(
@@ -197,7 +193,7 @@ class TeamHubTests(unittest.TestCase):
 
     def test_existing_membership_cannot_be_silently_elevated(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            os.environ["SESSION_BRIDGE_HOME"] = directory
+            os.environ["BRAID_HOME"] = directory
             store = hub.HubStore(Path(directory) / "hub")
             project = store.initialize("Team Omni", "Phoenix")
             identity_path = Path(directory) / "alice.json"
@@ -226,7 +222,7 @@ class TeamHubTests(unittest.TestCase):
 
     def test_signed_request_replay_staleness_and_tamper_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            os.environ["SESSION_BRIDGE_HOME"] = directory
+            os.environ["BRAID_HOME"] = directory
             identity_path = Path(directory) / "alice.json"
             store = hub.HubStore(Path(directory) / "hub")
             project = store.initialize("Team Omni", "Phoenix")
@@ -263,7 +259,7 @@ class TeamHubTests(unittest.TestCase):
 
     def test_offline_delivery_is_idempotent_and_ack_erases_ciphertext(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            os.environ["SESSION_BRIDGE_HOME"] = directory
+            os.environ["BRAID_HOME"] = directory
             store = hub.HubStore(Path(directory) / "hub")
             project = store.initialize("Team Omni", "Phoenix")
             principals: list[str] = []
@@ -350,7 +346,7 @@ class TeamHubTests(unittest.TestCase):
 
     def test_project_membership_prevents_cross_project_delivery(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            os.environ["SESSION_BRIDGE_HOME"] = directory
+            os.environ["BRAID_HOME"] = directory
             store = hub.HubStore(Path(directory) / "hub")
             first = store.initialize("Team Omni", "Phoenix")
             second = store.initialize("Team Omni", "Atlas")
@@ -375,7 +371,7 @@ class TeamHubTests(unittest.TestCase):
 
     def test_expiry_purges_payload_and_audit_tamper_is_detected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            os.environ["SESSION_BRIDGE_HOME"] = directory
+            os.environ["BRAID_HOME"] = directory
             store = hub.HubStore(Path(directory) / "hub")
             project = store.initialize("Team Omni", "Phoenix")
             principals: list[str] = []
@@ -443,7 +439,7 @@ class TeamHubTests(unittest.TestCase):
 
     def test_concurrent_pushes_are_durable_and_duplicate_safe(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            os.environ["SESSION_BRIDGE_HOME"] = directory
+            os.environ["BRAID_HOME"] = directory
             store = hub.HubStore(Path(directory) / "hub")
             project = store.initialize("Team Omni", "Phoenix")
             principals: list[str] = []

@@ -15,7 +15,7 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 import context_handoff  # noqa: E402
-import session_bridge  # noqa: E402
+import braid_session  # noqa: E402
 from context_security import scan_sensitive  # noqa: E402
 from context_store import ContextLedger  # noqa: E402
 from terminal_safe import terminal_safe  # noqa: E402
@@ -320,7 +320,7 @@ class HandoffTests(unittest.TestCase):
                     )
 
     def test_session_without_a_local_transcript_is_refused(self):
-        remote = session_bridge.Session(
+        remote = braid_session.Session(
             provider="claude",
             surface="claude-desktop-remote",
             session_id="44444444-4444-4444-4444-444444444444",
@@ -339,7 +339,7 @@ class HandoffTests(unittest.TestCase):
         ):
             foreign = Path(elsewhere) / "someone-else.jsonl"
             foreign.write_text("{}\n", encoding="utf-8")
-            session = session_bridge.Session(
+            session = braid_session.Session(
                 provider="codex",
                 surface="codex-local",
                 session_id=SESSION_ID,
@@ -365,7 +365,7 @@ class HandoffTests(unittest.TestCase):
             tempfile.TemporaryDirectory() as empty,
         ):
             transcript = write_codex_session(Path(codex), PLAIN_MESSAGES)
-            session = session_bridge.Session(
+            session = braid_session.Session(
                 provider="codex",
                 surface="codex-local",
                 session_id=SESSION_ID,
@@ -437,7 +437,7 @@ class HandoffTests(unittest.TestCase):
 
     def test_cli_handoff_subcommand_runs_and_emits_json(self):
         with self.workspace() as home:
-            args = session_bridge.build_parser().parse_args(
+            args = braid_session.build_parser().parse_args(
                 [
                     "handoff",
                     "--from",
@@ -461,7 +461,7 @@ class HandoffTests(unittest.TestCase):
 
     def test_cli_refusal_exits_non_zero_with_guidance(self):
         with self.workspace() as home:
-            args = session_bridge.build_parser().parse_args(
+            args = braid_session.build_parser().parse_args(
                 [
                     "handoff",
                     "--from",

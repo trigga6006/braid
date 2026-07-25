@@ -282,14 +282,14 @@ class IncidentPresetTests(unittest.TestCase):
 class IncidentBriefTests(unittest.TestCase):
     def setUp(self) -> None:
         bridge.crypto_imports()
-        self.previous_home = os.environ.get("SESSION_BRIDGE_HOME")
-        self.previous_keychain = os.environ.get("SESSION_BRIDGE_DISABLE_KEYCHAIN")
-        os.environ["SESSION_BRIDGE_DISABLE_KEYCHAIN"] = "1"
+        self.previous_home = os.environ.get("BRAID_HOME")
+        self.previous_keychain = os.environ.get("BRAID_DISABLE_KEYCHAIN")
+        os.environ["BRAID_DISABLE_KEYCHAIN"] = "1"
 
     def tearDown(self) -> None:
         for name, value in (
-            ("SESSION_BRIDGE_HOME", self.previous_home),
-            ("SESSION_BRIDGE_DISABLE_KEYCHAIN", self.previous_keychain),
+            ("BRAID_HOME", self.previous_home),
+            ("BRAID_DISABLE_KEYCHAIN", self.previous_keychain),
         ):
             if value is None:
                 os.environ.pop(name, None)
@@ -299,7 +299,7 @@ class IncidentBriefTests(unittest.TestCase):
     def test_brief_shows_both_sides_of_an_unresolved_disagreement(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            os.environ["SESSION_BRIDGE_HOME"] = str(root / "shared-security")
+            os.environ["BRAID_HOME"] = str(root / "shared-security")
             ledger = ContextLedger("phoenix", root / "alice")
             incident_ledger_first_revision(ledger)
             incident_ledger_second_revision(ledger)
@@ -345,7 +345,7 @@ class IncidentBriefTests(unittest.TestCase):
     def test_brief_separates_known_ruled_out_and_open_work(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            os.environ["SESSION_BRIDGE_HOME"] = str(root / "shared-security")
+            os.environ["BRAID_HOME"] = str(root / "shared-security")
             ledger = ContextLedger("phoenix", root / "alice")
             first = incident_ledger_first_revision(ledger)
             incident_ledger_second_revision(ledger)
@@ -423,7 +423,7 @@ class IncidentBriefTests(unittest.TestCase):
         escape = "\x1b"
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            os.environ["SESSION_BRIDGE_HOME"] = str(root / "shared-security")
+            os.environ["BRAID_HOME"] = str(root / "shared-security")
             ledger = ContextLedger("phoenix", root / "alice")
             commit_claims(
                 ledger,
@@ -463,7 +463,7 @@ class IncidentBriefTests(unittest.TestCase):
     def test_brief_and_status_commands_render_without_a_hub(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            os.environ["SESSION_BRIDGE_HOME"] = str(root / "shared-security")
+            os.environ["BRAID_HOME"] = str(root / "shared-security")
             ledger = ContextLedger("phoenix", root / "alice")
             incident_ledger_first_revision(ledger)
 
@@ -505,14 +505,14 @@ class IncidentBriefTests(unittest.TestCase):
 class IncidentExchangeTests(unittest.TestCase):
     def setUp(self) -> None:
         bridge.crypto_imports()
-        self.previous_home = os.environ.get("SESSION_BRIDGE_HOME")
-        self.previous_keychain = os.environ.get("SESSION_BRIDGE_DISABLE_KEYCHAIN")
-        os.environ["SESSION_BRIDGE_DISABLE_KEYCHAIN"] = "1"
+        self.previous_home = os.environ.get("BRAID_HOME")
+        self.previous_keychain = os.environ.get("BRAID_DISABLE_KEYCHAIN")
+        os.environ["BRAID_DISABLE_KEYCHAIN"] = "1"
 
     def tearDown(self) -> None:
         for name, value in (
-            ("SESSION_BRIDGE_HOME", self.previous_home),
-            ("SESSION_BRIDGE_DISABLE_KEYCHAIN", self.previous_keychain),
+            ("BRAID_HOME", self.previous_home),
+            ("BRAID_DISABLE_KEYCHAIN", self.previous_keychain),
         ):
             if value is None:
                 os.environ.pop(name, None)
@@ -530,7 +530,7 @@ class IncidentExchangeTests(unittest.TestCase):
     def test_fulfilled_incident_response_is_quarantined_not_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            os.environ["SESSION_BRIDGE_HOME"] = str(root / "shared-security")
+            os.environ["BRAID_HOME"] = str(root / "shared-security")
             harness = ConnectorHarness(root)
             try:
                 alice, bob = self._pair(harness, root)
@@ -627,7 +627,7 @@ class IncidentExchangeTests(unittest.TestCase):
     def test_incident_response_cannot_expand_beyond_the_preset_selectors(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            os.environ["SESSION_BRIDGE_HOME"] = str(root / "shared-security")
+            os.environ["BRAID_HOME"] = str(root / "shared-security")
             harness = ConnectorHarness(root)
             try:
                 alice, bob = self._pair(harness, root)
@@ -709,7 +709,7 @@ class IncidentExchangeTests(unittest.TestCase):
     def test_accepted_peer_context_keeps_a_conflict_unresolved(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            os.environ["SESSION_BRIDGE_HOME"] = str(root / "shared-security")
+            os.environ["BRAID_HOME"] = str(root / "shared-security")
             harness = ConnectorHarness(root)
             try:
                 alice, bob = self._pair(harness, root)
@@ -812,7 +812,7 @@ class IncidentExchangeTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            os.environ["SESSION_BRIDGE_HOME"] = str(root / "shared-security")
+            os.environ["BRAID_HOME"] = str(root / "shared-security")
             harness = ConnectorHarness(root)
             try:
                 alice, bob = self._pair(harness, root)
@@ -889,7 +889,7 @@ class IncidentExchangeTests(unittest.TestCase):
     def test_status_lists_pending_requests_and_flags_the_incident_preset(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            os.environ["SESSION_BRIDGE_HOME"] = str(root / "shared-security")
+            os.environ["BRAID_HOME"] = str(root / "shared-security")
             harness = ConnectorHarness(root)
             try:
                 alice, bob = self._pair(harness, root)

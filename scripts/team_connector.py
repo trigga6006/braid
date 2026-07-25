@@ -1,4 +1,4 @@
-"""Endpoint connector for the self-hosted asynchronous Session Bridge Team Hub."""
+"""Endpoint connector for the self-hosted asynchronous Braid Team Hub."""
 
 from __future__ import annotations
 
@@ -35,8 +35,8 @@ import network_bridge as bridge
 import team_hub as hub
 
 
-CONNECTOR_FORMAT = "session-bridge-team-connector/v1"
-MAILBOX_IDENTITY_FORMAT = "session-bridge-mailbox-identity/v1"
+CONNECTOR_FORMAT = "braid-team-connector/v1"
+MAILBOX_IDENTITY_FORMAT = "braid-mailbox-identity/v1"
 MAX_RESPONSE_BYTES = 2_000_000
 DEFAULT_SYNC_INTERVAL = 12 * 3600
 DEFAULT_RETRY_MIN_SECONDS = 5
@@ -82,7 +82,7 @@ def connector_home(explicit: Path | None = None) -> Path:
     if explicit is not None:
         return explicit.expanduser().resolve()
     return (
-        Path(os.environ.get("SESSION_BRIDGE_HOME", Path.home() / ".session-bridge"))
+        Path(os.environ.get("BRAID_HOME", Path.home() / ".braid"))
         .expanduser()
         .resolve()
     )
@@ -234,7 +234,7 @@ def _mailbox_key(
         algorithm=hashes.SHA256(),
         length=32,
         salt=salt,
-        info=b"session-bridge/team-mailbox/v1",
+        info=b"braid/team-mailbox/v1",
     ).derive(shared)
 
 
@@ -2122,7 +2122,7 @@ def command_run(args: argparse.Namespace) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--home", type=Path, help="Endpoint Session Bridge state root.")
+    parser.add_argument("--home", type=Path, help="Endpoint Braid state root.")
     parser.add_argument("--version", action="version", version="%(prog)s 0.5.0")
     commands = parser.add_subparsers(dest="command", required=True)
 

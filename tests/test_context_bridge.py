@@ -13,8 +13,8 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 class ContextBridgeCliTests(unittest.TestCase):
     @staticmethod
     def cli_env(home: str) -> dict[str, str]:
-        env = {**os.environ, "SESSION_BRIDGE_HOME": home}
-        vendor = Path.home() / ".session-bridge" / "vendor"
+        env = {**os.environ, "BRAID_HOME": home}
+        vendor = Path.home() / ".braid" / "vendor"
         if vendor.is_dir():
             current = env.get("PYTHONPATH", "")
             env["PYTHONPATH"] = str(vendor) + (os.pathsep + current if current else "")

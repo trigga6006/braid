@@ -1,6 +1,6 @@
 # Context Ledger v0.1
 
-Context Ledger is Session Bridge's owned semantic layer. Transports may change; the lifecycle and invariants below must not.
+Context Ledger is Braid's owned semantic layer. Transports may change; the lifecycle and invariants below must not.
 
 ## Unit of change
 
@@ -56,4 +56,4 @@ The receiver identity is a persistent Ed25519 key shared by the network bridge a
 - The shipped A2A-shaped adapter carries the complete signed disclosure and grant as one data Artifact and crosses into receiver quarantine in tests. It does not implement or claim conformance with A2A discovery, tasks, messages, or transports.
 - The shipped MCP stdio adapter exposes closed-schema tools for the full quarantine/review/accept lifecycle over the same ledger. MCP owns invocation/session transport.
 - External directories and message fabrics could locate principals and carry bytes, but no AGNTCY/SLIM integration is shipped. They do not own Context Ledger state.
-- Session Bridge's temporary encrypted relay is one transport implementation, not the portable semantic contract.
+- Braid's temporary encrypted relay is one transport implementation, not the portable semantic contract.

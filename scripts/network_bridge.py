@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Securely pair two Session Bridge installations over direct or public HTTPS."""
+"""Securely pair two Braid installations over direct or public HTTPS."""
 
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ from typing import Any
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
-import session_bridge as local
+import braid_session as local
 
 
 CODE_PREFIX = "SB2."
@@ -95,9 +95,7 @@ DETAIL_SECTIONS = {
 
 
 def bridge_home() -> Path:
-    path = Path(
-        os.environ.get("SESSION_BRIDGE_HOME", Path.home() / ".session-bridge")
-    ).expanduser()
+    path = Path(os.environ.get("BRAID_HOME", Path.home() / ".braid")).expanduser()
     path.mkdir(parents=True, exist_ok=True)
     for child in ("rooms", "connections", "logs"):
         (path / child).mkdir(exist_ok=True)
@@ -174,7 +172,7 @@ def safe_id(value: str) -> str:
         char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
         for char in value
     ):
-        raise SystemExit("Invalid Session Bridge identifier.")
+        raise SystemExit("Invalid Braid identifier.")
     return value
 
 
@@ -254,9 +252,9 @@ def load_json(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, ValueError) as error:
-        raise SystemExit(f"Unable to read Session Bridge state: {path}") from error
+        raise SystemExit(f"Unable to read Braid state: {path}") from error
     if not isinstance(value, dict):
-        raise SystemExit(f"Invalid Session Bridge state: {path}")
+        raise SystemExit(f"Invalid Braid state: {path}")
     return value
 
 
@@ -270,7 +268,7 @@ def _dpapi(data: bytes, protect: bool) -> bytes:
     result = _DataBlob()
     crypt32 = ctypes.windll.crypt32
     function = crypt32.CryptProtectData if protect else crypt32.CryptUnprotectData
-    description = "Session Bridge" if protect else None
+    description = "Braid" if protect else None
     if not function(
         ctypes.byref(source), description, None, None, None, 0, ctypes.byref(result)
     ):
@@ -282,7 +280,7 @@ def _dpapi(data: bytes, protect: bool) -> bytes:
 
 
 def keychain_backend() -> str:
-    if os.environ.get("SESSION_BRIDGE_DISABLE_KEYCHAIN") == "1":
+    if os.environ.get("BRAID_DISABLE_KEYCHAIN") == "1":
         return ""
     if platform.system() == "Darwin" and shutil.which("security"):
         return "macos-keychain"
@@ -299,7 +297,7 @@ def keychain_master_key(create: bool) -> tuple[str, bytes | None]:
     with KEYCHAIN_LOCK:
         if _LOCAL_MASTER_KEY is not None and _LOCAL_KEY_BACKEND == backend:
             return backend, _LOCAL_MASTER_KEY
-        account = getpass.getuser() or "session-bridge-user"
+        account = getpass.getuser() or "braid-user"
         try:
             if backend == "macos-keychain":
                 lookup = subprocess.run(
@@ -309,7 +307,7 @@ def keychain_master_key(create: bool) -> tuple[str, bytes | None]:
                         "-a",
                         account,
                         "-s",
-                        "Session Bridge local key",
+                        "Braid local key",
                         "-w",
                     ],
                     capture_output=True,
@@ -323,7 +321,7 @@ def keychain_master_key(create: bool) -> tuple[str, bytes | None]:
                         "secret-tool",
                         "lookup",
                         "application",
-                        "session-bridge",
+                        "braid",
                         "key",
                         "local-master-v1",
                     ],
@@ -360,7 +358,7 @@ def keychain_master_key(create: bool) -> tuple[str, bytes | None]:
                         "-a",
                         shlex.quote(account),
                         "-s",
-                        shlex.quote("Session Bridge local key"),
+                        shlex.quote("Braid local key"),
                         "-w",
                         encoded,
                     )
@@ -378,9 +376,9 @@ def keychain_master_key(create: bool) -> tuple[str, bytes | None]:
                     [
                         "secret-tool",
                         "store",
-                        "--label=Session Bridge local key",
+                        "--label=Braid local key",
                         "application",
-                        "session-bridge",
+                        "braid",
                         "key",
                         "local-master-v1",
                     ],
@@ -409,12 +407,10 @@ def seal_keychain_secret(data: bytes, backend: str, key: bytes) -> dict[str, str
     if backend not in ("macos-keychain", "linux-secret-service") or len(key) != 32:
         raise ValueError("Invalid local keychain encryption parameters.")
     if len(data) > MAX_PROTECTED_SECRET_BYTES:
-        raise ValueError("Protected Session Bridge state exceeds the safety limit.")
+        raise ValueError("Protected Braid state exceeds the safety limit.")
     _, _, _, _, _, ChaCha20Poly1305, _, _ = crypto_imports()
     nonce = secrets.token_bytes(12)
-    ciphertext = ChaCha20Poly1305(key).encrypt(
-        nonce, data, b"session-bridge/local-secret/v1"
-    )
+    ciphertext = ChaCha20Poly1305(key).encrypt(nonce, data, b"braid/local-secret/v1")
     return {
         "scheme": backend + "-chacha20poly1305",
         "nonce": b64e(nonce),
@@ -430,17 +426,15 @@ def open_keychain_secret(value: dict[str, Any], backend: str, key: bytes) -> byt
         ciphertext = b64d(str(value["data"]), MAX_PROTECTED_SECRET_BYTES + 16)
         _, _, _, _, _, ChaCha20Poly1305, _, _ = crypto_imports()
         return ChaCha20Poly1305(key).decrypt(
-            nonce, ciphertext, b"session-bridge/local-secret/v1"
+            nonce, ciphertext, b"braid/local-secret/v1"
         )
     except (KeyError, ValueError, InvalidTag) as error:
-        raise SystemExit(
-            "Keychain-protected Session Bridge state is invalid."
-        ) from error
+        raise SystemExit("Keychain-protected Braid state is invalid.") from error
 
 
 def protect_secret(data: bytes) -> dict[str, str]:
     if len(data) > MAX_PROTECTED_SECRET_BYTES:
-        raise ValueError("Protected Session Bridge state exceeds the safety limit.")
+        raise ValueError("Protected Braid state exceeds the safety limit.")
     if os.name == "nt":
         return {"scheme": "windows-dpapi", "data": b64e(_dpapi(data, True))}
     backend, key = keychain_master_key(True)
@@ -451,7 +445,7 @@ def protect_secret(data: bytes) -> dict[str, str]:
 
 def unprotect_secret(value: dict[str, Any]) -> bytes:
     if not isinstance(value, dict) or not isinstance(value.get("data"), str):
-        raise SystemExit("Protected Session Bridge secret is invalid.")
+        raise SystemExit("Protected Braid secret is invalid.")
     if value.get("scheme") == "windows-dpapi":
         raw = b64d(value["data"], MAX_PROTECTED_SECRET_BYTES + 4096)
         if os.name != "nt":
@@ -466,12 +460,12 @@ def unprotect_secret(value: dict[str, Any]) -> bytes:
         backend, key = keychain_master_key(False)
         if key is None or not str(value["scheme"]).startswith(backend):
             raise SystemExit(
-                "The operating-system keychain could not unlock Session Bridge state."
+                "The operating-system keychain could not unlock Braid state."
             )
         return open_keychain_secret(value, backend, key)
     if value.get("scheme") == "user-file":
         return b64d(value["data"], MAX_PROTECTED_SECRET_BYTES)
-    raise SystemExit("Unknown Session Bridge secret-protection scheme.")
+    raise SystemExit("Unknown Braid secret-protection scheme.")
 
 
 def save_protected_json(path: Path, value: dict[str, Any]) -> None:
@@ -486,9 +480,9 @@ def load_protected_json(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(unprotect_secret(wrapper["protected"]))
     except (KeyError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
-        raise SystemExit(f"Protected Session Bridge data is invalid: {path}") from error
+        raise SystemExit(f"Protected Braid data is invalid: {path}") from error
     if not isinstance(value, dict):
-        raise SystemExit(f"Protected Session Bridge data is invalid: {path}")
+        raise SystemExit(f"Protected Braid data is invalid: {path}")
     return value
 
 
@@ -500,7 +494,7 @@ def encode_code(payload: dict[str, Any]) -> str:
 def decode_code(code: str) -> dict[str, Any]:
     compact = "".join(code.lstrip("\ufeff").strip().split())
     if not compact.startswith(CODE_PREFIX):
-        raise SystemExit("This is not a Session Bridge SB2 join code.")
+        raise SystemExit("This is not a Braid SB2 join code.")
     try:
         value = json.loads(b64d(compact[len(CODE_PREFIX) :], 8192))
     except (ValueError, json.JSONDecodeError, UnicodeDecodeError) as error:
@@ -542,7 +536,7 @@ def read_join_code(args: argparse.Namespace) -> str:
         return args.code.strip()
     if not sys.stdin.isatty():
         raise SystemExit("Provide the code with --code-file or --code-stdin.")
-    return getpass.getpass("Session Bridge join code: ").strip()
+    return getpass.getpass("Braid join code: ").strip()
 
 
 def distribution_version(path: Path | None = None) -> str | None:
@@ -584,7 +578,7 @@ def crypto_imports() -> tuple[Any, ...]:
         ) from error
     if str(cryptography.__version__) != REQUIRED_CRYPTOGRAPHY:
         raise SystemExit(
-            f"Session Bridge requires cryptography {REQUIRED_CRYPTOGRAPHY}; found "
+            f"Braid requires cryptography {REQUIRED_CRYPTOGRAPHY}; found "
             f"{cryptography.__version__}. Run role-aware setup --yes to install the patched private copy."
         )
     return x509, hashes, serialization, ec, x25519, ChaCha20Poly1305, HKDF, NameOID
@@ -601,7 +595,7 @@ def ensure_cryptography(confirmed: bool) -> str:
         if not confirmed:
             found = vendor_version or system_version or "not installed"
             raise SystemExit(
-                f"Session Bridge needs patched cryptography {REQUIRED_CRYPTOGRAPHY} (found {found}). "
+                f"Braid needs patched cryptography {REQUIRED_CRYPTOGRAPHY} (found {found}). "
                 "Re-run role-aware setup --yes after the user approves the one-time setup."
             )
         vendor = bridge_home() / "vendor"
@@ -666,7 +660,7 @@ def derive_channel_key(
         algorithm=hashes.SHA256(),
         length=32,
         salt=pairing_secret,
-        info=b"session-bridge/v2/channel/" + room_id.encode("ascii"),
+        info=b"braid/v2/channel/" + room_id.encode("ascii"),
     ).derive(shared)
 
 
@@ -694,24 +688,24 @@ def open_json(key: bytes, envelope: dict[str, Any], aad: bytes) -> dict[str, Any
         plaintext = ChaCha20Poly1305(key).decrypt(nonce, ciphertext, aad)
         value = json.loads(plaintext)
     except (KeyError, ValueError, InvalidTag, json.JSONDecodeError) as error:
-        raise ValueError("Encrypted Session Bridge payload was invalid.") from error
+        raise ValueError("Encrypted Braid payload was invalid.") from error
     if not isinstance(value, dict):
-        raise ValueError("Encrypted Session Bridge payload must be an object.")
+        raise ValueError("Encrypted Braid payload must be an object.")
     return value
 
 
 def join_aad(room_id: str, client_public: str) -> bytes:
-    return f"session-bridge/v2|join|{room_id}|{client_public}".encode("ascii")
+    return f"braid/v2|join|{room_id}|{client_public}".encode("ascii")
 
 
 def join_response_aad(room_id: str, peer_id: str) -> bytes:
-    return f"session-bridge/v2|join-response|{room_id}|{peer_id}".encode("ascii")
+    return f"braid/v2|join-response|{room_id}|{peer_id}".encode("ascii")
 
 
 def channel_aad(
     room_id: str, peer_id: str, direction: str, endpoint: str, counter: int
 ) -> bytes:
-    return f"session-bridge/v2|{room_id}|{peer_id}|{direction}|{endpoint}|{counter}".encode(
+    return f"braid/v2|{room_id}|{peer_id}|{direction}|{endpoint}|{counter}".encode(
         "ascii"
     )
 
@@ -720,7 +714,7 @@ def make_certificate(directory: Path, hostname: str, expires_at: int) -> str:
     x509, hashes, serialization, ec, _, _, _, NameOID = crypto_imports()
     key = ec.generate_private_key(ec.SECP256R1())
     subject = issuer = x509.Name(
-        [x509.NameAttribute(NameOID.COMMON_NAME, "Session Bridge direct room")]
+        [x509.NameAttribute(NameOID.COMMON_NAME, "Braid direct room")]
     )
     names: list[Any] = [x509.DNSName("localhost")]
     try:
@@ -771,7 +765,7 @@ def transcript_context(
     transcript["session"] = shareable_transcript_session(session)
     rendered = local.render_markdown(transcript)
     return {
-        "format": "session-bridge-context/v1",
+        "format": "braid-context/v1",
         "kind": "transcript",
         "purpose": normalized_purpose(purpose),
         "detail": detail,
@@ -792,7 +786,7 @@ def curated_context(
             f"Curated context must contain 1-{MAX_CONTEXT_CHARS} characters."
         )
     return {
-        "format": "session-bridge-context/v1",
+        "format": "braid-context/v1",
         "kind": "curated",
         "purpose": normalized_purpose(purpose),
         "detail": detail,
@@ -847,9 +841,10 @@ def build_context(
 
 
 def validate_context(context: dict[str, Any]) -> None:
-    if context.get("format") != "session-bridge-context/v1" or context.get(
-        "kind"
-    ) not in ("curated", "transcript"):
+    if context.get("format") != "braid-context/v1" or context.get("kind") not in (
+        "curated",
+        "transcript",
+    ):
         raise ValueError("Unsupported context packet.")
     if not isinstance(context.get("session"), dict):
         raise ValueError("Context packet lacks session metadata.")
@@ -1049,10 +1044,7 @@ def render_context(context: dict[str, Any]) -> str:
     )
     if context["kind"] == "curated":
         return (
-            "# Session Bridge Curated Context\n\n"
-            + banner
-            + context["content"].rstrip()
-            + "\n"
+            "# Braid Curated Context\n\n" + banner + context["content"].rstrip() + "\n"
         )
     return banner + local.render_markdown(context["transcript"])
 
@@ -1264,7 +1256,7 @@ def find_cloudflared() -> str:
     # An explicit administrator/user path is a trust decision. Otherwise only
     # execute the private helper whose pinned release digest we verified; an
     # arbitrary PATH entry is not a sufficient supply-chain trust boundary.
-    configured = os.environ.get("SESSION_BRIDGE_CLOUDFLARED", "").strip()
+    configured = os.environ.get("BRAID_CLOUDFLARED", "").strip()
     private = (
         bridge_home()
         / "bin"
@@ -1343,7 +1335,7 @@ def setup_cloudflared(confirmed: bool) -> dict[str, Any]:
     if not confirmed:
         raise SystemExit(
             "Hosting publicly downloads the pinned Cloudflare Tunnel helper (about 18-52 MB by platform) "
-            "into ~/.session-bridge/bin. "
+            "into ~/.braid/bin. "
             "It requires no account or login. Re-run with setup --role host --yes after the user approves."
         )
     asset_name, download_url, expected = cloudflared_download_spec()
@@ -1352,7 +1344,7 @@ def setup_cloudflared(confirmed: bool) -> dict[str, Any]:
     protect_path(bin_dir)
     target = bin_dir / ("cloudflared.exe" if os.name == "nt" else "cloudflared")
     download = bin_dir / (asset_name + ".download")
-    request = Request(download_url, headers={"User-Agent": "Session-Bridge"})
+    request = Request(download_url, headers={"User-Agent": "Braid"})
     hasher = hashlib.sha256()
     size = 0
     try:
@@ -1505,7 +1497,7 @@ class PinnedHTTPSConnection(http.client.HTTPSConnection):
         if not hmac.compare_digest(actual, self.expected_fingerprint):
             self.close()
             raise ssl.SSLError(
-                "Session Bridge certificate fingerprint did not match the join code."
+                "Braid certificate fingerprint did not match the join code."
             )
 
 
@@ -1527,7 +1519,7 @@ def request_json(
 ) -> dict[str, Any]:
     parsed = urlsplit(origin)
     if parsed.scheme != "https" or not parsed.hostname:
-        raise SystemExit("Session Bridge only accepts HTTPS endpoints.")
+        raise SystemExit("Braid only accepts HTTPS endpoints.")
     port = parsed.port or 443
     if fingerprint:
         connection: http.client.HTTPSConnection = PinnedHTTPSConnection(
@@ -1556,11 +1548,11 @@ def request_json(
         response = connection.getresponse()
         raw = response.read(MAX_BODY + 1)
     except (OSError, ssl.SSLError, http.client.HTTPException) as error:
-        raise SystemExit(f"Could not reach the Session Bridge host: {error}") from error
+        raise SystemExit(f"Could not reach the Braid host: {error}") from error
     finally:
         connection.close()
     if len(raw) > MAX_BODY:
-        raise SystemExit("The Session Bridge response exceeded the safety limit.")
+        raise SystemExit("The Braid response exceeded the safety limit.")
     try:
         value = json.loads(raw.decode("utf-8")) if raw else {}
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -1575,7 +1567,7 @@ def request_json(
         )
         raise HostRejected(
             response.status,
-            f"Session Bridge host rejected the request (HTTP {response.status}): {detail}",
+            f"Braid host rejected the request (HTTP {response.status}): {detail}",
         )
     if not isinstance(value, dict):
         raise SystemExit("The host returned an invalid response.")
@@ -1629,7 +1621,7 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
 
 
 class BridgeHandler(BaseHTTPRequestHandler):
-    server_version = "SessionBridge/2"
+    server_version = "Braid/2"
 
     def setup(self) -> None:
         super().setup()
@@ -1669,9 +1661,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def active_state(self) -> dict[str, Any] | None:
         state = load_json(state_path(self.directory))
         if state.get("closed") or int(state.get("expires", 0)) < int(time.time()):
-            self.send_value(
-                410, {"error": "This Session Bridge room is closed or expired."}
-            )
+            self.send_value(410, {"error": "This Braid room is closed or expired."})
             return None
         return state
 
@@ -2221,7 +2211,7 @@ def command_host(args: argparse.Namespace) -> None:
                 else ""
             )
             abort_host_room(directory, process)
-            raise SystemExit(f"Session Bridge host failed to start.\n{detail[-4000:]}")
+            raise SystemExit(f"Braid host failed to start.\n{detail[-4000:]}")
         state = load_json(state_path(directory))
         if state.get("origin"):
             try:
@@ -2232,7 +2222,7 @@ def command_host(args: argparse.Namespace) -> None:
         time.sleep(0.15)
     else:
         abort_host_room(directory, process)
-        raise SystemExit(f"Session Bridge host did not start. Check {log_path}")
+        raise SystemExit(f"Braid host did not start. Check {log_path}")
     if transport == "public":
         try:
             wait_for_public_tunnel(str(state["origin"]))
@@ -2267,7 +2257,7 @@ def command_host(args: argparse.Namespace) -> None:
         json.dumps(result, indent=2)
         if args.json
         else (
-            f"Session Bridge is hosting over {transport}.\nRoom: {room_id}\n"
+            f"Braid is hosting over {transport}.\nRoom: {room_id}\n"
             f"Pairing expires: {result['pairing_expires']}\nJoin code (send privately):\n{code}\n"
             "After your peer joins, run pending and compare the displayed safety code before approving."
         )
@@ -2798,7 +2788,7 @@ def command_poll(args: argparse.Namespace) -> None:
     text = (
         json.dumps(response, indent=2) + "\n"
         if args.json
-        else render_events(response.get("events", []), "Session Bridge Replies")
+        else render_events(response.get("events", []), "Braid Replies")
     )
     write_or_print(text, args.output)
 
@@ -2814,7 +2804,7 @@ def command_inbox(args: argparse.Namespace) -> None:
     text = (
         json.dumps({"room": state["room_id"], "events": events}, indent=2) + "\n"
         if args.json
-        else render_events(events, "Session Bridge Inbox")
+        else render_events(events, "Braid Inbox")
     )
     write_or_print(text, args.output)
 
@@ -2833,7 +2823,7 @@ def command_watch(args: argparse.Namespace) -> None:
         while True:
             state = load_json(state_path(directory))
             if state.get("closed") or int(state.get("expires", 0)) < int(time.time()):
-                raise SystemExit("This Session Bridge room is closed or expired.")
+                raise SystemExit("This Braid room is closed or expired.")
             events = [
                 event
                 for event in load_events(directory, after)
@@ -2883,7 +2873,7 @@ def command_watch(args: argparse.Namespace) -> None:
     text = (
         json.dumps(result, indent=2) + "\n"
         if args.json
-        else render_events(result["events"], "Session Bridge Collaboration")
+        else render_events(result["events"], "Braid Collaboration")
     )
     write_or_print(text, args.output)
 
