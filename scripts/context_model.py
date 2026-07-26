@@ -445,9 +445,7 @@ def resolved_active_view(
         if claim.get("status") == "active" and not _is_expired(claim, current)
     ]
     superseded: set[str] = set()
-    stack = [
-        target for claim in live_seeds for target in claim.get("supersedes", [])
-    ]
+    stack = [target for claim in live_seeds for target in claim.get("supersedes", [])]
     while stack:
         target_id = stack.pop()
         if target_id in superseded:

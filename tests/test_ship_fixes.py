@@ -238,7 +238,9 @@ class LargePackTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as home:
             identity = load_or_create_identity(Path(home) / "id.json")
             claims = [
-                _claim(f"claim-{index:04d}", key=f"topic-{index:04d}", provenance_count=6)
+                _claim(
+                    f"claim-{index:04d}", key=f"topic-{index:04d}", provenance_count=6
+                )
                 for index in range(500)
             ]
             revision = _revision(claims, pack="p-big", rid="r-big")
@@ -352,9 +354,7 @@ class AuditHealTests(unittest.TestCase):
             self.assertFalse(reopened.verify_audit())
             actions = [
                 json.loads(line)["action"]
-                for line in reopened.audit_path.read_text(
-                    encoding="utf-8"
-                ).splitlines()
+                for line in reopened.audit_path.read_text(encoding="utf-8").splitlines()
             ]
             self.assertEqual(actions[-1], "prepare-commit")
 
@@ -407,9 +407,7 @@ class FlushClassificationTests(unittest.TestCase):
             )
             with mock.patch.object(client._opener, "open", side_effect=failure):
                 try:
-                    client._post(
-                        "/v1/mailbox/push", {"a": 1}, request_nonce=nonce
-                    )
+                    client._post("/v1/mailbox/push", {"a": 1}, request_nonce=nonce)
                 except connector.ConnectorError as raised:
                     return type(raised)
         raise AssertionError("expected a ConnectorError")
@@ -426,8 +424,12 @@ class FlushClassificationTests(unittest.TestCase):
 
     def test_reversible_codes_stay_queued(self):
         # Same HTTP statuses, but reversible codes must NOT be dead-lettered.
-        self.assertIs(self._raise_for(403, "endpoint_not_active"), connector.ConnectorError)
-        self.assertIs(self._raise_for(409, "replayed_request"), connector.ConnectorError)
+        self.assertIs(
+            self._raise_for(403, "endpoint_not_active"), connector.ConnectorError
+        )
+        self.assertIs(
+            self._raise_for(409, "replayed_request"), connector.ConnectorError
+        )
 
     def test_unsigned_permanent_code_stays_queued(self):
         self.assertIs(
@@ -525,9 +527,7 @@ class DeadLetterTests(unittest.TestCase):
             path, state_path, record = self._queued_exchange(active, root)
             active._dead_letter("phoenix", path, record, "permanent")
             self.assertFalse(path.exists())
-            self.assertTrue(
-                (root / "team-deadletter" / "phoenix" / path.name).exists()
-            )
+            self.assertTrue((root / "team-deadletter" / "phoenix" / path.name).exists())
             state = connector.bridge.load_protected_json(state_path)
             self.assertEqual(state["state"], "delivery-failed")
             self.assertEqual(state["delivery_failure"]["reason"], "permanent")

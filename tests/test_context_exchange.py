@@ -165,9 +165,7 @@ class ContextExchangeTests(unittest.TestCase):
                 with self.assertRaisesRegex(
                     exchange.ContextExchangeError, "request window"
                 ):
-                    exchange.verify_response(
-                        forged, request=request, now=1_900_000_002
-                    )
+                    exchange.verify_response(forged, request=request, now=1_900_000_002)
 
 
 if __name__ == "__main__":

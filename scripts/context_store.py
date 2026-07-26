@@ -479,9 +479,8 @@ class ContextLedger:
                 revision_id = str(details["id"])
                 state = self._state()
                 return (
-                    (self.commits / f"{revision_id}.json").exists()
-                    or revision_id in state["heads"]
-                )
+                    self.commits / f"{revision_id}.json"
+                ).exists() or revision_id in state["heads"]
             if action == "reconcile":
                 return (self.reconciliations / f"{details['token']}.json").exists()
             if action == "quarantine":
@@ -535,9 +534,7 @@ class ContextLedger:
         ):
             return
         recovered_action = last["action"].removeprefix("prepare-")
-        if self._prepared_transition_touched_state(
-            recovered_action, last["details"]
-        ):
+        if self._prepared_transition_touched_state(recovered_action, last["details"]):
             return
         entry = {
             "at": _now(),

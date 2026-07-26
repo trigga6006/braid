@@ -1284,9 +1284,7 @@ class HubHandler(BaseHTTPRequestHandler):
         super().setup()
         # Hard total-connection deadline so a slow/dribbling client cannot hold a
         # worker slot past the per-recv timeout by trickling one byte at a time.
-        self._deadline = threading.Timer(
-            CONNECTION_DEADLINE_SECONDS, self._force_close
-        )
+        self._deadline = threading.Timer(CONNECTION_DEADLINE_SECONDS, self._force_close)
         self._deadline.daemon = True
         self._deadline.start()
 
