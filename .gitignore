@@ -5,3 +5,10 @@ benchmark-results/
 build/
 dist/
 *.egg-info/
+
+# local env and virtualenvs
+.env
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/

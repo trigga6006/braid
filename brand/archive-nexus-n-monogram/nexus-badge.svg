@@ -1,0 +1,73 @@
+﻿<!-- Badge treatment, verbatim from kimono assets/badge-template.svg.
+     Mark ink is 36w x 30h; scaled 0.8333 to extent 30 and centred:
+     translate(9 4) -> ink x 9..39, y 11.5..36.5.
+     No dark variant needed: the shell is a brand colour, not near-black,
+     and the corpus leaves those unchanged in dark mode (65/65). -->
+<svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <g filter="url(#innerShadows)">
+    <g clip-path="url(#shell)">
+      <rect width="48" height="48" rx="12" fill="#4F46E5"/>
+      <rect width="48" height="48" fill="url(#sheen)"/>
+      <g data-glyph filter="url(#glyphShadow)">
+        <g transform="translate(9 4) scale(0.8333)" fill="url(#glyphGrad)">
+          <rect x="0" y="9" width="10.5" height="30" rx="5.25" opacity="0.6"/>
+          <rect x="25.5" y="9" width="10.5" height="30" rx="5.25" opacity="0.6"/>
+          <rect x="-3.3" y="18.75" width="42.6" height="10.5" rx="5.25"
+                transform="rotate(37.41 18 24)"/>
+        </g>
+      </g>
+    </g>
+    <rect x="1" y="1" width="46" height="46" rx="11" stroke="url(#hairline)" stroke-width="2"/>
+  </g>
+  <defs>
+    <filter id="innerShadows" x="0" y="-3" width="48" height="54"
+            filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"/>
+      <feColorMatrix in="SourceAlpha" type="matrix"
+                     values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+      <feOffset dy="-3"/><feGaussianBlur stdDeviation="1.5"/>
+      <feComposite in2="hardAlpha" operator="arithmetic" k2="-1" k3="1"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.1 0"/>
+      <feBlend mode="normal" in2="shape" result="inner1"/>
+      <feColorMatrix in="SourceAlpha" type="matrix"
+                     values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+      <feOffset dy="3"/><feGaussianBlur stdDeviation="1.5"/>
+      <feComposite in2="hardAlpha" operator="arithmetic" k2="-1" k3="1"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.1 0"/>
+      <feBlend mode="normal" in2="inner1" result="inner2"/>
+      <feColorMatrix in="SourceAlpha" type="matrix"
+                     values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+      <feMorphology radius="1" operator="erode" in="SourceAlpha"/><feOffset/>
+      <feComposite in2="hardAlpha" operator="arithmetic" k2="-1" k3="1"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.2 0"/>
+      <feBlend mode="normal" in2="inner2"/>
+    </filter>
+    <filter id="glyphShadow" x="3" y="5.25" width="42" height="42"
+            filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feColorMatrix in="SourceAlpha" type="matrix"
+                     values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+      <feMorphology radius="1.5" operator="erode" in="SourceAlpha" result="shadow"/>
+      <feOffset dy="2.25"/><feGaussianBlur stdDeviation="2.25"/>
+      <feComposite in2="hardAlpha" operator="out"/>
+      <feColorMatrix type="matrix"
+                     values="0 0 0 0 0.141176 0 0 0 0 0.141176 0 0 0 0 0.141176 0 0 0 0.1 0"/>
+      <feBlend mode="normal" in2="BackgroundImageFix" result="shadow"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="shadow"/>
+    </filter>
+    <linearGradient id="sheen" x1="24" y1="0" x2="26" y2="48" gradientUnits="userSpaceOnUse">
+      <stop stop-color="white" stop-opacity="0"/>
+      <stop offset="1" stop-color="white" stop-opacity="0.12"/>
+    </linearGradient>
+    <linearGradient id="glyphGrad" x1="24" y1="11.5" x2="24" y2="36.5" gradientUnits="userSpaceOnUse">
+      <stop stop-color="white" stop-opacity="0.8"/>
+      <stop offset="1" stop-color="white" stop-opacity="0.5"/>
+    </linearGradient>
+    <linearGradient id="hairline" x1="24" y1="0" x2="24" y2="48" gradientUnits="userSpaceOnUse">
+      <stop stop-color="white" stop-opacity="0.12"/>
+      <stop offset="1" stop-color="white" stop-opacity="0"/>
+    </linearGradient>
+    <clipPath id="shell"><rect width="48" height="48" rx="12" fill="white"/></clipPath>
+  </defs>
+</svg>

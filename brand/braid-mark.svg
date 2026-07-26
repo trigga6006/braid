@@ -1,0 +1,11 @@
+<!-- Nexus - shared-void mark. Archetype 2 (overlap duo), inverted.
+     Two 28u squircles rx8, offset 11u, drawn as ONE path with fill-rule="evenodd"
+     so their intersection knocks out. The nexus is the shared region.
+     One element, one colour, no opacity. Arms 8.5u, void 13.1u on the 48 grid. -->
+<svg width="30" height="48" viewBox="0 0 30 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <g transform="translate(0 9) scale(0.76923)">
+    <path fill="#4F46E5" fill-rule="evenodd" clip-rule="evenodd"
+          d="M8 0H20A8 8 0 0 1 28 8V20A8 8 0 0 1 20 28H8A8 8 0 0 1 0 20V8A8 8 0 0 1 8 0Z
+             M19 11H31A8 8 0 0 1 39 19V31A8 8 0 0 1 31 39H19A8 8 0 0 1 11 31V19A8 8 0 0 1 19 11Z"/>
+  </g>
+</svg>

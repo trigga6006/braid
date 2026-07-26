@@ -1,0 +1,18 @@
+<!-- Lockup. Mark 30 wide, gap 10, wordmark starts x=40.
+     Cap height 20 (top 13.4, baseline 33.4), font-size 28, tracking -2%.
+
+     NOT OUTLINED - Inter is not installed here, so the wordmark ships as <text>
+     with an Inter-first stack and will substitute elsewhere. Outline before
+     public use and re-trim the viewBox (127 is estimated from Inter Bold
+     advance widths, not measured ink). -->
+<svg width="127" height="48" viewBox="0 0 127 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <g transform="translate(0 9) scale(0.76923)">
+    <path fill="#4F46E5" fill-rule="evenodd" clip-rule="evenodd"
+          d="M8 0H20A8 8 0 0 1 28 8V20A8 8 0 0 1 20 28H8A8 8 0 0 1 0 20V8A8 8 0 0 1 8 0Z
+             M19 11H31A8 8 0 0 1 39 19V31A8 8 0 0 1 31 39H19A8 8 0 0 1 11 31V19A8 8 0 0 1 19 11Z"/>
+  </g>
+  <text x="40" y="33.4"
+        font-family="Inter, 'Inter Display', 'Helvetica Neue', Helvetica, Arial, sans-serif"
+        font-size="28" font-weight="700" letter-spacing="-0.56"
+        fill="#0A0A0A">Braid</text>
+</svg>

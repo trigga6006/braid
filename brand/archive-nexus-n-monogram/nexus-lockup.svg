@@ -1,0 +1,21 @@
+<!-- Lockup. Mark 36 wide, gap 10, wordmark starts x=46.
+     Cap height 20 (top 13.4, baseline 33.4), font-size 28, tracking -2%.
+     Wordmark is intentionally plain: the mark is already a letterform N, so a
+     typographic substitution on top would be a gimmick (lockup.md: one
+     asymmetry per identity, and ~75% of the corpus wordmarks are plain).
+
+     NOT OUTLINED. Inter is not installed on this machine, so the wordmark ships
+     as <text> with an Inter-first stack. On a machine without Inter it will
+     substitute. Outline it before shipping publicly, and re-trim viewBox width
+     to the real ink (133 below is an estimate from Inter Bold advance widths). -->
+<svg width="133" height="48" viewBox="0 0 133 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <g fill="#4F46E5">
+    <rect x="0" y="9" width="10.5" height="30" rx="5.25" opacity="0.6"/>
+    <rect x="25.5" y="9" width="10.5" height="30" rx="5.25" opacity="0.6"/>
+    <rect x="-3.3" y="18.75" width="42.6" height="10.5" rx="5.25" transform="rotate(37.41 18 24)"/>
+  </g>
+  <text x="46" y="33.4"
+        font-family="Inter, 'Inter Display', 'Helvetica Neue', Helvetica, Arial, sans-serif"
+        font-size="28" font-weight="700" letter-spacing="-0.56"
+        fill="#0A0A0A">Nexus</text>
+</svg>
