@@ -1,4 +1,4 @@
-﻿<!-- Badge treatment, verbatim from kimono assets/badge-template.svg.
+<!-- Badge treatment, verbatim from kimono assets/badge-template.svg.
      Mark ink is 39x39 pre-scale; 30/39 = 0.76923 puts it at extent 30, and
      translate(9 9) centres it -> ink 9..39 on both axes.
      No dark variant: brand-colour shell, unchanged in dark mode (corpus 65/65). -->
@@ -7,7 +7,7 @@
     <g clip-path="url(#shell)">
       <rect width="48" height="48" rx="12" fill="#4F46E5"/>
       <rect width="48" height="48" fill="url(#sheen)"/>
-      <g data-glyph filter="url(#glyphShadow)">
+      <g data-glyph="" filter="url(#glyphShadow)">
         <g transform="translate(9 9) scale(0.76923)">
           <path fill="url(#glyphGrad)" fill-rule="evenodd" clip-rule="evenodd"
                 d="M8 0H20A8 8 0 0 1 28 8V20A8 8 0 0 1 20 28H8A8 8 0 0 1 0 20V8A8 8 0 0 1 8 0Z

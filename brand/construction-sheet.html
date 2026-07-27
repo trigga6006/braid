@@ -1,49 +1,44 @@
 <!doctype html><meta charset="utf-8"><title>Kimono construction sheet</title>
 <style>
-  :root { --u: 11px; }
-  * { box-sizing: border-box; }
-  body { margin:0; padding:32px; background:#fafafa; color:#18181b;
-         font:13px/1.5 ui-sans-serif,system-ui,'Segoe UI',sans-serif; }
-  h1 { font-size:18px; margin:0 0 4px; }
-  .lede { color:#71717a; margin:0 0 26px; max-width:70ch; }
-  .tally { display:inline-block; padding:3px 10px; border-radius:999px;
-            font-weight:600; font-size:12px; margin-left:10px; vertical-align:2px; }
-  .ok { background:#dcfce7; color:#166534; }
-  .bad { background:#fee2e2; color:#991b1b; }
-  .card { background:#fff; border:1px solid #e4e4e7; border-radius:12px;
-           padding:18px 20px; margin-bottom:18px; }
-  .card h2 { font-size:14px; margin:0 0 14px; font-weight:600; }
-  .verdict { font-weight:600; font-size:11px; padding:2px 8px; border-radius:999px;
-              margin-left:10px; }
-  .stage { display:flex; gap:26px; align-items:flex-start; flex-wrap:wrap; }
-  .frame { position:relative; height:calc(48 * var(--u));
-            width:calc(var(--vbw) * var(--u)); flex:none;
-            background:#fff; outline:1px solid #f4f4f5; }
-  .frame .art, .frame .grid { position:absolute; inset:0; width:100%; height:100%; }
-  .frame .grid { pointer-events:none; }
-  .readout { margin:0; display:grid; grid-template-columns:auto auto;
-              gap:3px 16px; font:12px/1.45 ui-monospace,Menlo,Consolas,monospace; }
-  .readout dt { color:#71717a; }
-  .readout dd { margin:0; }
-  .pass { color:#166534; } .fail { color:#b91c1c; font-weight:600; }
-  .note { color:#a1a1aa; }
+ *{box-sizing:border-box}
+ body{margin:0;padding:32px;background:#fafafa;color:#18181b;
+      font:13px/1.5 ui-sans-serif,system-ui,'Segoe UI',sans-serif}
+ h1{font-size:18px;margin:0 0 4px}
+ .lede{color:#71717a;margin:0 0 26px;max-width:74ch}
+ .tally{display:inline-block;padding:3px 10px;border-radius:999px;font-weight:600;
+        font-size:12px;margin-left:10px;vertical-align:2px}
+ .ok{background:#dcfce7;color:#166534} .bad{background:#fee2e2;color:#991b1b}
+ .card{background:#fff;border:1px solid #e4e4e7;border-radius:12px;
+       padding:18px 20px;margin-bottom:18px}
+ .card h2{font-size:14px;margin:0 0 14px;font-weight:600}
+ .verdict{font-weight:600;font-size:11px;padding:2px 8px;border-radius:999px;margin-left:10px}
+ .stage{display:flex;gap:26px;align-items:flex-start;flex-wrap:wrap}
+ .frame{position:relative;height:calc(48 * var(--u));width:calc(var(--vbw) * var(--u));
+        flex:none;background:#fff;outline:1px solid #f4f4f5}
+ .frame .art,.frame .grid{position:absolute;inset:0;width:100%;height:100%}
+ .frame .grid{pointer-events:none}
+ .readout{margin:0;display:grid;grid-template-columns:auto auto;gap:3px 16px;
+          font:12px/1.45 ui-monospace,Menlo,Consolas,monospace}
+ .readout dt{color:#71717a} .readout dd{margin:0}
+ .pass{color:#166534} .fail{color:#b91c1c;font-weight:600}
 </style>
-<h1>Kimono construction sheet<span class="tally" data-slot="tally"></span></h1>
-<p class="lede">Measured in-browser with <code>getBBox()</code> on the 48-unit grid.
-Grey grid = 1u, darker = 6u. Blue crosshair = centre (24u). Amber = the standard
-9u/39u badge inset. Green box = the measured ink bounds.</p>
+<h1>Kimono construction sheet<span class="tally bad">4 / 6 pass</span></h1>
+<p class="lede">Every number measured in Python off the raster and off the parsed
+XML — this page renders those results, it does not recompute them. Grey grid = 1u,
+darker = 6u. Blue crosshair = centre. Amber = the 9u/39u badge inset. Green box =
+the measured ink bounds. The script exits non-zero if anything here failed.</p>
 
-<section class="card" data-name="nexus-badge" data-badge="1">
-  <h2>nexus-badge<span class="verdict" data-slot="verdict"></span></h2>
+<section class="card">
+  <h2>brand/braid-badge<span class="verdict ok">PASS</span></h2>
   <div class="stage" style="--vbw:48; --u:11.0px">
-    <div class="frame">
-      ﻿
+    <div class="frame" data-box="9.000,9.000,39.000,39.000" data-badge="1">
+
 <svg class="art" preserveAspectRatio="xMidYMid meet" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
   <g filter="url(#c0-innerShadows)">
     <g clip-path="url(#c0-shell)">
       <rect width="48" height="48" rx="12" fill="#4F46E5"/>
       <rect width="48" height="48" fill="url(#c0-sheen)"/>
-      <g data-glyph filter="url(#c0-glyphShadow)">
+      <g data-glyph="" filter="url(#c0-glyphShadow)">
         <g transform="translate(9 9) scale(0.76923)">
           <path fill="url(#c0-glyphGrad)" fill-rule="evenodd" clip-rule="evenodd"
                 d="M8 0H20A8 8 0 0 1 28 8V20A8 8 0 0 1 20 28H8A8 8 0 0 1 0 20V8A8 8 0 0 1 8 0Z
@@ -108,15 +103,15 @@ Grey grid = 1u, darker = 6u. Blue crosshair = centre (24u). Amber = the standard
 
       <svg class="grid" viewBox="0 0 48 48" preserveAspectRatio="xMidYMid meet"></svg>
     </div>
-    <dl class="readout" data-slot="readout"></dl>
+    <dl class="readout"><dt>type</dt><dd class="pass">badge  ok</dd><dt>viewBox height</dt><dd class="pass">48  ok   = 48</dd><dt>padding L / R</dt><dd class="pass">9.00 / 9.00  ok</dd><dt>padding T / B</dt><dd class="pass">9.00 / 9.00  ok</dd><dt>ink extent</dt><dd class="pass">30.00u  ok   28-36u, nominal 30</dd><dt>vertical centring</dt><dd class="pass">+0.00u  ok   within 0.50u</dd><dt>horizontal centring</dt><dd class="pass">+0.00u  ok   within 0.50u</dd><dt>glyph inset (long axis)</dt><dd class="pass">9.00..39.00  ok   nominal 9..39</dd><dt>features</dt><dd class="pass">1  (1 regions + 0 holes)  ok   corpus median 2, p90 7</dd></dl>
   </div>
 </section>
 
 
-<section class="card" data-name="nexus-lockup-dark" data-badge="0">
-  <h2>nexus-lockup-dark<span class="verdict" data-slot="verdict"></span></h2>
+<section class="card">
+  <h2>brand/braid-lockup-dark<span class="verdict bad">FAIL</span></h2>
   <div class="stage" style="--vbw:127; --u:5.669px">
-    <div class="frame">
+    <div class="frame" data-box="0.000,9.000,107.625,39.000" data-badge="0">
       
 <svg class="art" preserveAspectRatio="xMidYMid meet" viewBox="0 0 127 48" fill="none" xmlns="http://www.w3.org/2000/svg">
   <g transform="translate(0 9) scale(0.76923)">
@@ -132,15 +127,15 @@ Grey grid = 1u, darker = 6u. Blue crosshair = centre (24u). Amber = the standard
 
       <svg class="grid" viewBox="0 0 127 48" preserveAspectRatio="xMidYMid meet"></svg>
     </div>
-    <dl class="readout" data-slot="readout"></dl>
+    <dl class="readout"><dt>type</dt><dd class="pass">lockup  ok</dd><dt>viewBox height</dt><dd class="pass">48  ok   = 48</dd><dt>padding L / R</dt><dd class="pass">0.00 / 19.38  ok</dd><dt>padding T / B</dt><dd class="pass">9.00 / 9.00  ok</dd><dt>left trim</dt><dd class="pass">0.00  ok   mark starts at x=0</dd><dt>wordmark</dt><dd class="fail">un-outlined &lt;text&gt;  FAIL   trim and centring only settle once outlined</dd></dl>
   </div>
 </section>
 
 
-<section class="card" data-name="nexus-lockup" data-badge="0">
-  <h2>nexus-lockup<span class="verdict" data-slot="verdict"></span></h2>
+<section class="card">
+  <h2>brand/braid-lockup<span class="verdict bad">FAIL</span></h2>
   <div class="stage" style="--vbw:127; --u:5.669px">
-    <div class="frame">
+    <div class="frame" data-box="0.000,9.000,107.625,39.000" data-badge="0">
       
 <svg class="art" preserveAspectRatio="xMidYMid meet" viewBox="0 0 127 48" fill="none" xmlns="http://www.w3.org/2000/svg">
   <g transform="translate(0 9) scale(0.76923)">
@@ -156,15 +151,15 @@ Grey grid = 1u, darker = 6u. Blue crosshair = centre (24u). Amber = the standard
 
       <svg class="grid" viewBox="0 0 127 48" preserveAspectRatio="xMidYMid meet"></svg>
     </div>
-    <dl class="readout" data-slot="readout"></dl>
+    <dl class="readout"><dt>type</dt><dd class="pass">lockup  ok</dd><dt>viewBox height</dt><dd class="pass">48  ok   = 48</dd><dt>padding L / R</dt><dd class="pass">0.00 / 19.38  ok</dd><dt>padding T / B</dt><dd class="pass">9.00 / 9.00  ok</dd><dt>left trim</dt><dd class="pass">0.00  ok   mark starts at x=0</dd><dt>wordmark</dt><dd class="fail">un-outlined &lt;text&gt;  FAIL   trim and centring only settle once outlined</dd></dl>
   </div>
 </section>
 
 
-<section class="card" data-name="nexus-mark-dark" data-badge="0">
-  <h2>nexus-mark-dark<span class="verdict" data-slot="verdict"></span></h2>
+<section class="card">
+  <h2>brand/braid-mark-dark<span class="verdict ok">PASS</span></h2>
   <div class="stage" style="--vbw:30; --u:11.0px">
-    <div class="frame">
+    <div class="frame" data-box="0.000,9.000,30.000,39.000" data-badge="0">
       
 <svg class="art" preserveAspectRatio="xMidYMid meet" viewBox="0 0 30 48" fill="none" xmlns="http://www.w3.org/2000/svg">
   <g transform="translate(0 9) scale(0.76923)">
@@ -176,15 +171,15 @@ Grey grid = 1u, darker = 6u. Blue crosshair = centre (24u). Amber = the standard
 
       <svg class="grid" viewBox="0 0 30 48" preserveAspectRatio="xMidYMid meet"></svg>
     </div>
-    <dl class="readout" data-slot="readout"></dl>
+    <dl class="readout"><dt>type</dt><dd class="pass">mark  ok</dd><dt>viewBox height</dt><dd class="pass">48  ok   = 48</dd><dt>padding L / R</dt><dd class="pass">0.00 / 0.00  ok</dd><dt>padding T / B</dt><dd class="pass">9.00 / 9.00  ok</dd><dt>ink extent</dt><dd class="pass">30.00u  ok   28-36u, median 30</dd><dt>vertical centring</dt><dd class="pass">+0.00u  ok   within 0.50u</dd><dt>horizontal trim</dt><dd class="pass">0.00 / 0.00  ok   ink touches 0 and W</dd><dt>features</dt><dd class="pass">3  (2 regions + 1 holes)  ok   corpus median 2, p90 7</dd><dt>interior at 16px</dt><dd class="pass">1 of 1 holes survive  ok   27/27 corpus marks keep theirs</dd></dl>
   </div>
 </section>
 
 
-<section class="card" data-name="nexus-mark" data-badge="0">
-  <h2>nexus-mark<span class="verdict" data-slot="verdict"></span></h2>
+<section class="card">
+  <h2>brand/braid-mark<span class="verdict ok">PASS</span></h2>
   <div class="stage" style="--vbw:30; --u:11.0px">
-    <div class="frame">
+    <div class="frame" data-box="0.000,9.000,30.000,39.000" data-badge="0">
       
 <svg class="art" preserveAspectRatio="xMidYMid meet" viewBox="0 0 30 48" fill="none" xmlns="http://www.w3.org/2000/svg">
   <g transform="translate(0 9) scale(0.76923)">
@@ -196,15 +191,15 @@ Grey grid = 1u, darker = 6u. Blue crosshair = centre (24u). Amber = the standard
 
       <svg class="grid" viewBox="0 0 30 48" preserveAspectRatio="xMidYMid meet"></svg>
     </div>
-    <dl class="readout" data-slot="readout"></dl>
+    <dl class="readout"><dt>type</dt><dd class="pass">mark  ok</dd><dt>viewBox height</dt><dd class="pass">48  ok   = 48</dd><dt>padding L / R</dt><dd class="pass">0.00 / 0.00  ok</dd><dt>padding T / B</dt><dd class="pass">9.00 / 9.00  ok</dd><dt>ink extent</dt><dd class="pass">30.00u  ok   28-36u, median 30</dd><dt>vertical centring</dt><dd class="pass">+0.00u  ok   within 0.50u</dd><dt>horizontal trim</dt><dd class="pass">0.00 / 0.00  ok   ink touches 0 and W</dd><dt>features</dt><dd class="pass">3  (2 regions + 1 holes)  ok   corpus median 2, p90 7</dd><dt>interior at 16px</dt><dd class="pass">1 of 1 holes survive  ok   27/27 corpus marks keep theirs</dd></dl>
   </div>
 </section>
 
 
-<section class="card" data-name="site-favicon" data-badge="1">
-  <h2>site-favicon<span class="verdict" data-slot="verdict"></span></h2>
+<section class="card">
+  <h2>Temp/site-favicon<span class="verdict ok">PASS</span></h2>
   <div class="stage" style="--vbw:48; --u:11.0px">
-    <div class="frame">
+    <div class="frame" data-box="9.000,9.000,39.000,39.000" data-badge="1">
       
 <svg class="art" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
   <defs>
@@ -225,7 +220,7 @@ Grey grid = 1u, darker = 6u. Blue crosshair = centre (24u). Amber = the standard
   <g clip-path="url(#c5-shell)">
     <rect width="48" height="48" rx="12" fill="#4F46E5"/>
     <rect width="48" height="48" fill="url(#c5-sheen)"/>
-    <g data-glyph transform="translate(9 9) scale(0.76923)">
+    <g data-glyph="" transform="translate(9 9) scale(0.76923)">
       <path fill="url(#c5-glyph)" fill-rule="evenodd" clip-rule="evenodd"
             d="M8 0H20A8 8 0 0 1 28 8V20A8 8 0 0 1 20 28H8A8 8 0 0 1 0 20V8A8 8 0 0 1 8 0Z
                M19 11H31A8 8 0 0 1 39 19V31A8 8 0 0 1 31 39H19A8 8 0 0 1 11 31V19A8 8 0 0 1 19 11Z"/>
@@ -236,143 +231,35 @@ Grey grid = 1u, darker = 6u. Blue crosshair = centre (24u). Amber = the standard
 
       <svg class="grid" viewBox="0 0 48 48" preserveAspectRatio="xMidYMid meet"></svg>
     </div>
-    <dl class="readout" data-slot="readout"></dl>
+    <dl class="readout"><dt>type</dt><dd class="pass">badge  ok</dd><dt>viewBox height</dt><dd class="pass">48  ok   = 48</dd><dt>padding L / R</dt><dd class="pass">9.00 / 9.00  ok</dd><dt>padding T / B</dt><dd class="pass">9.00 / 9.00  ok</dd><dt>ink extent</dt><dd class="pass">30.00u  ok   28-36u, nominal 30</dd><dt>vertical centring</dt><dd class="pass">+0.00u  ok   within 0.50u</dd><dt>horizontal centring</dt><dd class="pass">+0.00u  ok   within 0.50u</dd><dt>glyph inset (long axis)</dt><dd class="pass">9.00..39.00  ok   nominal 9..39</dd><dt>features</dt><dd class="pass">1  (1 regions + 0 holes)  ok   corpus median 2, p90 7</dd></dl>
   </div>
 </section>
 
 <script>
-const U = 48;
-function bbox(el) {
-  try { return el.getBBox({ stroke: true, fill: true, markers: true }); }
-  catch (e) { return el.getBBox(); }
-}
-// getBBox() reports an element's bounds in its OWN user space, i.e. before its
-// own transform. Tagging <g data-glyph transform="translate(9 9)..."> would
-// therefore read 0..39 instead of 9..39. Re-express the box in the root svg's
-// coordinates so the answer is the same wherever data-glyph is placed.
-function bboxInRoot(el, svg) {
-  const b = bbox(el);
-  if (el === svg || !el.getCTM || !svg.getCTM) return b;
-  const m = el.getCTM(), rootM = svg.getCTM();
-  if (!m || !rootM) return b;
-  const rel = rootM.inverse().multiply(m);
-  const pts = [[b.x, b.y], [b.x + b.width, b.y],
-               [b.x + b.width, b.y + b.height], [b.x, b.y + b.height]]
-    .map(([x, y]) => new DOMPoint(x, y).matrixTransform(rel));
-  const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
-  const x0 = Math.min(...xs), y0 = Math.min(...ys);
-  return { x: x0, y: y0, width: Math.max(...xs) - x0, height: Math.max(...ys) - y0 };
-}
-function line(ns, x1, y1, x2, y2, stroke, w, dash) {
-  const l = document.createElementNS(ns, 'line');
-  l.setAttribute('x1', x1); l.setAttribute('y1', y1);
-  l.setAttribute('x2', x2); l.setAttribute('y2', y2);
-  l.setAttribute('stroke', stroke); l.setAttribute('stroke-width', w);
-  if (dash) l.setAttribute('stroke-dasharray', dash);
-  return l;
-}
-let pass = 0, total = 0;
-document.querySelectorAll('.card').forEach(card => {
-  total++;
-  const art = card.querySelector('svg.art');
-  const grid = card.querySelector('svg.grid');
-  const ns = 'http://www.w3.org/2000/svg';
-  const vb = art.getAttribute('viewBox').split(/[\s,]+/).map(Number);
-  const W = vb[2], H = vb[3];
-  const isBadge = card.dataset.badge === '1';
-
-  const target = art.querySelector('[data-glyph]') || art;
-  const b = bboxInRoot(target, art);
-  const L = b.x, R = W - (b.x + b.width), T = b.y, B = H - (b.y + b.height);
-
-  // ---- grid (1u lines get too dense on a wide lockup, so majors only there)
-  const fine = W <= 60;
-  for (let i = 0; i <= W; i++) {
-    if (!fine && i % 6) continue;
-    grid.appendChild(line(ns, i, 0, i, H, i % 6 ? '#00000010' : '#00000024', 0.08));
-  }
-  for (let i = 0; i <= H; i++) {
-    if (!fine && i % 6) continue;
-    grid.appendChild(line(ns, 0, i, W, i, i % 6 ? '#00000010' : '#00000024', 0.08));
-  }
-  // centre crosshair
-  grid.appendChild(line(ns, W / 2, 0, W / 2, H, '#2563eb', 0.16));
-  grid.appendChild(line(ns, 0, H / 2, W, H / 2, '#2563eb', 0.16));
-  // standard badge inset
-  if (isBadge) [9, 39].forEach(v => {
-    grid.appendChild(line(ns, v, 0, v, H, '#f59e0b', 0.14, '1 1'));
-    grid.appendChild(line(ns, 0, v, W, v, '#f59e0b', 0.14, '1 1'));
-  });
-  // measured ink box
-  const box = document.createElementNS(ns, 'rect');
-  box.setAttribute('x', b.x); box.setAttribute('y', b.y);
-  box.setAttribute('width', b.width); box.setAttribute('height', b.height);
-  box.setAttribute('fill', 'none'); box.setAttribute('stroke', '#16a34a');
-  box.setAttribute('stroke-width', 0.2);
-  grid.appendChild(box);
-
-  // ---- checks. Three asset types, three rule sets.
-  const isLockup = !isBadge && W >= 60;
-  const hasText = !!art.querySelector('text');
-  const kind = isBadge ? 'badge' : isLockup ? 'lockup' : 'mark';
-  const checks = [];
-  const add = (label, val, ok, note) => { checks.push({ label, val, ok, note }); };
-
-  add('type', kind, true, '');
-  add('viewBox height', H.toFixed(0), H === 48, '= 48');
-  add('padding L / R', L.toFixed(2) + ' / ' + R.toFixed(2), true, '');
-  add('padding T / B', T.toFixed(2) + ' / ' + B.toFixed(2), true, '');
-
-  if (isBadge) {
-    add('ink extent', Math.max(b.width, b.height).toFixed(2) + 'u',
-        Math.max(b.width, b.height) >= 28 - 0.01 && Math.max(b.width, b.height) <= 36 + 0.01,
-        '28-36u, nominal 30');
-    add('vertical centring', (T - B >= 0 ? '+' : '') + (T - B).toFixed(2) + 'u',
-        Math.abs(T - B) <= 0.5, 'T-B within 0.50u');
-    add('horizontal centring', (L - R >= 0 ? '+' : '') + (L - R).toFixed(2) + 'u',
-        Math.abs(L - R) <= 0.5, 'L-R within 0.50u');
-    add('glyph inset', L.toFixed(2) + '..' + (W - R).toFixed(2),
-        Math.abs(L - 9) <= 0.6 && Math.abs(R - 9) <= 0.6, 'nominal 9..39');
-  } else if (isLockup) {
-    // A lockup is wide by design: the extent rule does not apply. What matters is
-    // that it is trimmed to the ink on both sides and sits on the 48u grid.
-    add('left trim', L.toFixed(2), Math.abs(L) <= 0.3, 'mark starts at x=0');
-    add('right trim', R.toFixed(2), Math.abs(R) <= 0.75,
-        hasText ? 'font-dependent - outline to settle' : 'viewBox trimmed to ink');
-    if (hasText) {
-      add('wordmark', 'un-outlined <text>', false,
-          'getBBox returns the em box, not cap height; trim and centring are ' +
-          'only exact once outlined');
-    } else {
-      add('vertical centring', (T - B >= 0 ? '+' : '') + (T - B).toFixed(2) + 'u',
-          Math.abs(T - B) <= 0.5, 'T-B within 0.50u');
-    }
-  } else {
-    add('ink extent', Math.max(b.width, b.height).toFixed(2) + 'u',
-        Math.max(b.width, b.height) >= 28 - 0.01 && Math.max(b.width, b.height) <= 36 + 0.01,
-        '28-36u, median 30');
-    add('vertical centring', (T - B >= 0 ? '+' : '') + (T - B).toFixed(2) + 'u',
-        Math.abs(T - B) <= 0.5, 'T-B within 0.50u');
-    add('horizontal trim', L.toFixed(2) + ' / ' + R.toFixed(2),
-        Math.abs(L) <= 0.3 && Math.abs(R) <= 0.3, 'ink touches 0 and W');
-  }
-
-  const dl = card.querySelector('[data-slot=readout]');
-  checks.forEach(c => {
-    const dt = document.createElement('dt'); dt.textContent = c.label;
-    const dd = document.createElement('dd');
-    dd.className = c.ok ? 'pass' : 'fail';
-    dd.textContent = c.val + (c.ok ? '  ok' : '  FAIL') + (c.note ? '   ' + c.note : '');
-    dl.append(dt, dd);
-  });
-
-  const good = checks.every(c => c.ok);
-  if (good) pass++;
-  const v = card.querySelector('[data-slot=verdict]');
-  v.textContent = good ? 'PASS' : 'FAIL';
-  v.className = 'verdict ' + (good ? 'ok' : 'bad');
+const NS='http://www.w3.org/2000/svg';
+function line(x1,y1,x2,y2,s,w,d){const l=document.createElementNS(NS,'line');
+ l.setAttribute('x1',x1);l.setAttribute('y1',y1);l.setAttribute('x2',x2);l.setAttribute('y2',y2);
+ l.setAttribute('stroke',s);l.setAttribute('stroke-width',w);if(d)l.setAttribute('stroke-dasharray',d);
+ return l;}
+document.querySelectorAll('.frame').forEach(f=>{
+  const g=f.querySelector('svg.grid');
+  const vb=g.getAttribute('viewBox').split(/[\s,]+/).map(Number);
+  const [ox,oy,W,H]=vb, fine=W<=60;
+  for(let i=0;i<=W;i++){ if(!fine&&i%6) continue;
+    g.appendChild(line(ox+i,oy,ox+i,oy+H,i%6?'#00000010':'#00000024',0.08)); }
+  for(let i=0;i<=H;i++){ if(!fine&&i%6) continue;
+    g.appendChild(line(ox,oy+i,ox+W,oy+i,i%6?'#00000010':'#00000024',0.08)); }
+  g.appendChild(line(ox+W/2,oy,ox+W/2,oy+H,'#2563eb',0.16));
+  g.appendChild(line(ox,oy+H/2,ox+W,oy+H/2,'#2563eb',0.16));
+  if(f.dataset.badge==='1') [9,39].forEach(v=>{
+    g.appendChild(line(v,oy,v,oy+H,'#f59e0b',0.14,'1 1'));
+    g.appendChild(line(ox,v,ox+W,v,'#f59e0b',0.14,'1 1')); });
+  const b=f.dataset.box; if(!b) return;
+  const [x0,y0,x1,y1]=b.split(',').map(Number);
+  const r=document.createElementNS(NS,'rect');
+  r.setAttribute('x',x0);r.setAttribute('y',y0);
+  r.setAttribute('width',x1-x0);r.setAttribute('height',y1-y0);
+  r.setAttribute('fill','none');r.setAttribute('stroke','#16a34a');r.setAttribute('stroke-width',0.2);
+  g.appendChild(r);
 });
-const t = document.querySelector('[data-slot=tally]');
-t.textContent = pass + ' / ' + total + ' pass';
-t.className = 'tally ' + (pass === total ? 'ok' : 'bad');
 </script>

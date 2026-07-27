@@ -1,0 +1,10 @@
+<!-- Braid mark, geometric: a 30u squircle divided by an S of two quarter-arcs
+     into two interlocking halves, pushed 6u apart to leave the channel. Two
+     strands woven into one form; neither is whole without the other.
+     2 features (2 regions, 0 holes) against a corpus median of 2. -->
+<svg width="30" height="48" viewBox="0 0 30 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <g transform="translate(2.5 11.5) scale(0.83333)" fill="#7C3AED">
+    <path transform="translate(-3 0)" d="M15 0A7.5 7.5 0 0 1 15 15A7.5 7.5 0 0 0 15 30H9A9 9 0 0 1 0 21V9A9 9 0 0 1 9 0Z"/>
+    <path transform="translate(3 0)" d="M15 0A7.5 7.5 0 0 1 15 15A7.5 7.5 0 0 0 15 30H21A9 9 0 0 0 30 21V9A9 9 0 0 0 21 0Z"/>
+  </g>
+</svg>
