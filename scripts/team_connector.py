@@ -18,6 +18,7 @@ import time
 from typing import Any, Iterator, Mapping
 from urllib import error, request
 
+import context_autopolicy as autopolicy
 import context_exchange as exchange
 from context_model import canonical_json as canonical_context_json
 from context_security import (
@@ -26,6 +27,7 @@ from context_security import (
     create_identity_assertion,
     identity_principal,
     load_or_create_identity,
+    scan_sensitive,
     strict_json_loads,
     verify_identity_assertion,
 )
@@ -54,6 +56,14 @@ class TransientConnectorError(ConnectorError):
 
 class PermanentRejectionError(ConnectorError):
     """A definitive server rejection that retrying cannot fix (drop, don't retry)."""
+
+
+class _AutoRespondRefused(ConnectorError):
+    """Standing authorization withdrew consent once it saw the real payload."""
+
+    def __init__(self, decision: Mapping[str, Any]) -> None:
+        super().__init__("Standing authorization refused this disclosure.")
+        self.decision = dict(decision)
 
 
 # Hub error codes for a push that retrying the exact request cannot fix.  Keyed
@@ -628,11 +638,17 @@ class TeamConnector:
             "enrolled_at",
             "published",
             "trusted_peers",
+            "auto_respond",
         }
         if "published" not in value:
             value["published"] = {}
         if "trusted_peers" not in value:
             value["trusted_peers"] = {}
+        # Back-fill for projects enrolled before standing authorization existed.
+        # The default is disabled, so an upgrade never starts answering on its
+        # own; the operator has to turn it on deliberately.
+        if "auto_respond" not in value:
+            value["auto_respond"] = dict(autopolicy.DEFAULT_POLICY)
         if (
             set(value) != required
             or value.get("format") != CONNECTOR_FORMAT
@@ -640,6 +656,13 @@ class TeamConnector:
             or not isinstance(value["trusted_peers"], dict)
         ):
             raise ConnectorError("Team project configuration is invalid.")
+        try:
+            # Validate on load: a policy that cannot be parsed must fail the
+            # project closed rather than silently fall back to a default the
+            # operator never wrote.
+            autopolicy.load_policy(value["auto_respond"])
+        except autopolicy.AutoPolicyError as error:
+            raise ConnectorError(f"Auto-respond policy is invalid: {error}") from error
         if value["alias"] != _safe_alias(alias):
             raise ConnectorError("Team project alias is invalid.")
         try:
@@ -851,6 +874,9 @@ class TeamConnector:
             "enrolled_at": int(time.time()),
             "published": {},
             "trusted_peers": {},
+            # Written explicitly at enrollment so a fresh config and a
+            # back-filled one are byte-identical.
+            "auto_respond": dict(autopolicy.DEFAULT_POLICY),
         }
         existing_path = self.config_path(alias)
         if existing_path.exists():
@@ -1321,6 +1347,337 @@ class TeamConnector:
             used += encoded
         return head, chosen, has_lifecycle_removal
 
+    def _load_state(self, path: Path) -> dict[str, Any]:
+        """Read protected exchange state as a domain error, never SystemExit.
+
+        `bridge.load_protected_json` exits the process on unreadable state.
+        That is reasonable for a one-shot command and wrong for a long-running
+        connector, so the failure is normalized at the boundary and callers can
+        handle one bad record without taking down the daemon.
+        """
+        try:
+            value = bridge.load_protected_json(path)
+        except SystemExit as error:
+            raise ConnectorError(
+                f"Stored exchange state is unreadable: {error}"
+            ) from None
+        if not isinstance(value, dict):
+            raise ConnectorError("Stored exchange state is invalid.")
+        return value
+
+    # ---- standing authorization -------------------------------------------
+
+    def auto_policy_path(self, alias: str) -> Path:
+        return self.home / "team-autopolicy" / f"{_safe_alias(alias)}.jsonl"
+
+    def auto_policy(self, alias: str) -> dict[str, Any]:
+        return autopolicy.load_policy(self.load_config(alias)["auto_respond"])
+
+    def set_auto_policy(self, alias: str, changes: Mapping[str, Any]) -> dict[str, Any]:
+        """Merge and validate a policy change, refusing anything unparsable."""
+        with _file_lock(self.lock_path(alias)):
+            config = self.load_config(alias)
+            merged = dict(config["auto_respond"])
+            merged.update(changes)
+            policy = autopolicy.load_policy(merged)
+            config["auto_respond"] = policy
+            self.save_config(alias, config)
+        return policy
+
+    def _record_auto_decision(self, alias: str, record: Mapping[str, Any]) -> None:
+        """Append one decision to the project's auto-respond audit log.
+
+        The log holds decisions and claim identifiers, never claim text, so it
+        stays readable without exposing context that the disclosure itself
+        governs.
+        """
+        path = self.auto_policy_path(alias)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        bridge.protect_path(path.parent)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True) + "\n")
+        bridge.protect_path(path)
+
+    def _recent_auto_responses(self, alias: str) -> list[str]:
+        """Timestamps of prior automatic answers, for the rate limit.
+
+        An unreadable log fails the sweep closed rather than silently resetting
+        the count: losing the record of what was already answered must not
+        become permission to answer more.
+        """
+        path = self.auto_policy_path(alias)
+        if not path.exists():
+            return []
+        stamps: list[str] = []
+        try:
+            with path.open("r", encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except (json.JSONDecodeError, ValueError) as error:
+                        raise ConnectorError(
+                            "Auto-respond audit log is corrupt; repair or remove "
+                            f"{path} before enabling unattended answers ({error})."
+                        ) from None
+                    if (
+                        isinstance(record, dict)
+                        and record.get("decision") == "auto"
+                        and record.get("answered")
+                    ):
+                        stamps.append(str(record.get("evaluated_at", "")))
+        except OSError as error:
+            raise ConnectorError(
+                f"Auto-respond audit log could not be read: {error}"
+            ) from None
+        return stamps
+
+    def _last_decision_digest(self, alias: str, request_id: str) -> str:
+        """Digest of the most recent decision recorded for one request."""
+        path = self.auto_policy_path(alias)
+        if not path.exists():
+            return ""
+        digest = ""
+        try:
+            with path.open("r", encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+                    if (
+                        isinstance(record, dict)
+                        and record.get("request_id") == request_id
+                    ):
+                        digest = str(record.get("decision_digest", ""))
+        except OSError:
+            return ""
+        return digest
+
+    def _plan_for(
+        self, ledger: ContextLedger, head: str, claim_ids: list[str]
+    ) -> dict[str, Any]:
+        """Shape the claims about to be disclosed for a policy decision.
+
+        Materialized from `head`, not from the ledger's current view: a
+        disclosure is built from that revision, so authorizing against current
+        freshness could approve a different set than the one actually signed.
+        """
+        source = (
+            ledger.active_claims_at(head)
+            if head
+            else ledger.freshness()["active_claims"]
+        )
+        active = {str(claim["id"]): claim for claim in source}
+        claims = [active[claim_id] for claim_id in claim_ids if claim_id in active]
+        excluded = [
+            {
+                "claim_id": str(claim["id"]),
+                "reason": "secret scanner finding requires explicit redaction",
+            }
+            for claim in claims
+            if scan_sensitive(claim)
+        ]
+        used = 2
+        for index, claim in enumerate(claims):
+            used += len(canonical_context_json(claim)) + (1 if index else 0)
+        return {
+            "claims": claims,
+            "excluded": excluded,
+            "budget": {"used_bytes": used},
+            "head": head,
+        }
+
+    def _disclosure_preview(
+        self, ledger: ContextLedger, verified_request: Mapping[str, Any]
+    ) -> tuple[dict[str, Any], bool]:
+        """Build what `respond` would disclose, without disclosing it.
+
+        Runs the secret scanner here so a credential finding refers rather than
+        surfacing later as a hard failure part-way through answering.
+        """
+        head, chosen, has_lifecycle_removal = self._requested_claim_ids(
+            ledger, verified_request
+        )
+        return self._plan_for(ledger, head, chosen), has_lifecycle_removal
+
+    def auto_respond(
+        self, alias: str, ledger_project: str, *, dry_run: bool = False
+    ) -> dict[str, Any]:
+        """Answer every open request this project's standing policy allows.
+
+        Never raises for a single unanswerable request: one malformed or
+        out-of-scope request must not stop the others, and must not take down
+        `team run`, whose loop only survives transient errors.
+        """
+        policy = self.auto_policy(alias)
+        config = self.load_config(alias)
+        recent = self._recent_auto_responses(alias)
+        answered: list[dict[str, Any]] = []
+        referred: list[dict[str, Any]] = []
+        # Enumerated directly rather than through `requests`, which fails the
+        # whole listing if any single stored record is unreadable.  Here one
+        # bad file must only cost its own request.
+        inbox = self.exchange_state_path(alias, "inbound", "probe").parent
+        paths = sorted(inbox.glob("*.json")) if inbox.exists() else []
+        for state_path in paths:
+            request_id = state_path.stem
+            record = self._auto_respond_one(
+                alias,
+                ledger_project,
+                config,
+                policy,
+                state_path,
+                request_id,
+                recent,
+                dry_run,
+            )
+            if record is None:
+                continue
+            if record["decision"] == "auto":
+                answered.append(record)
+            else:
+                referred.append(record)
+            # Referred requests are re-evaluated every tick, so only append a
+            # record when the outcome actually changed.  Otherwise a daemon
+            # would grow the log without bound.
+            digest = hashlib.sha256(
+                canonical_context_json(
+                    {
+                        "decision": record["decision"],
+                        "blockers": record["blockers"],
+                        "answered": record["answered"],
+                    }
+                )
+            ).hexdigest()
+            if digest != self._last_decision_digest(alias, request_id):
+                self._record_auto_decision(alias, {**record, "decision_digest": digest})
+        return {
+            "project": _safe_alias(alias),
+            "enabled": policy["enabled"],
+            "dry_run": bool(dry_run),
+            "answered": answered,
+            "referred": referred,
+            "needs_human": bool(referred),
+        }
+
+    def _auto_respond_one(
+        self,
+        alias: str,
+        ledger_project: str,
+        config: Mapping[str, Any],
+        policy: Mapping[str, Any],
+        state_path: Path,
+        request_id: str,
+        recent: list[str],
+        dry_run: bool,
+    ) -> dict[str, Any] | None:
+        """Evaluate and possibly answer one request. Never raises."""
+        decision: dict[str, Any]
+        try:
+            state = self._load_state(state_path)
+            if state.get("state") != "open":
+                return None
+            verified = exchange.verify_request(
+                state["request"],
+                expected_project=str(config["project_id"]),
+                expected_recipient=str(config["principal"]),
+            )
+            ledger = ContextLedger(ledger_project, self.home)
+            plan, has_lifecycle_removal = self._disclosure_preview(ledger, verified)
+            decision = autopolicy.evaluate(
+                verified,
+                policy,
+                plan,
+                ledger_status=ledger.status(),
+                recent_responses=recent,
+            )
+            if has_lifecycle_removal:
+                # A removal inside the requested window means the honest answer
+                # is needs-clarification, which is a human's call.
+                decision["decision"] = "refer"
+                decision["blockers"] = [
+                    *decision["blockers"],
+                    "requested window contains a lifecycle removal",
+                ]
+        except Exception as failure:  # noqa: BLE001 - a daemon must not die here
+            decision = {
+                "decision": "refer",
+                "blockers": [f"could not evaluate request: {failure}"],
+                "requester": "",
+                "correlation_id": request_id,
+                "claims": 0,
+                "used_bytes": None,
+                "responses_last_hour": len(recent),
+                "policy": {},
+                "evaluated_at": autopolicy.iso_now(),
+            }
+        record = {
+            **decision,
+            "project": _safe_alias(alias),
+            "request_id": request_id,
+            "dry_run": bool(dry_run),
+            "answered": False,
+        }
+        if decision["decision"] != "auto" or dry_run:
+            return record
+
+        def authorize(
+            verified_request: Mapping[str, Any],
+            head: str,
+            claim_ids: list[str],
+            ledger: ContextLedger,
+            has_lifecycle_removal: bool,
+        ) -> None:
+            # Re-decided inside respond's lock against the claims actually
+            # being signed, so a commit landing between preview and send cannot
+            # widen the answer past what was authorized.  Policy and the rate
+            # window are re-read here too, so a revocation or a concurrent
+            # answer between preview and send is seen.
+            if has_lifecycle_removal:
+                raise _AutoRespondRefused(
+                    {
+                        "decision": "refer",
+                        "blockers": ["requested window contains a lifecycle removal"],
+                    }
+                )
+            final = autopolicy.evaluate(
+                verified_request,
+                self.auto_policy(alias),
+                self._plan_for(ledger, head, claim_ids),
+                ledger_status=ledger.status(),
+                recent_responses=self._recent_auto_responses(alias),
+            )
+            if final["decision"] != "auto":
+                raise _AutoRespondRefused(final)
+
+        try:
+            outcome = self.respond(
+                alias,
+                ledger_project,
+                request_id,
+                status="fulfilled",
+                authorize=authorize,
+            )
+            record["answered"] = True
+            record["response_id"] = outcome.get("response_id", "")
+            record["source_revision"] = outcome.get("source_revision")
+            record["claim_ids"] = outcome.get("claim_ids", [])
+            recent.append(str(decision["evaluated_at"]))
+        except _AutoRespondRefused as refusal:
+            record["decision"] = "refer"
+            record["blockers"] = [
+                *refusal.decision["blockers"],
+                "ledger changed between evaluation and answer",
+            ]
+        except Exception as failure:  # noqa: BLE001 - a daemon must not die here
+            record["decision"] = "refer"
+            record["blockers"] = [f"answer failed: {failure}"]
+        return record
+
     def respond(
         self,
         alias: str,
@@ -1329,8 +1686,16 @@ class TeamConnector:
         *,
         status: str = "fulfilled",
         note: str = "",
+        authorize: Any = None,
     ) -> dict[str, Any]:
-        """Answer one authenticated pull request with a minimized Context Pack."""
+        """Answer one authenticated pull request with a minimized Context Pack.
+
+        `authorize`, when given, is called inside this method's lock with the
+        verified request, the resolved head, and the exact claims about to be
+        disclosed. Standing authorization uses it so its decision is bound to
+        the payload actually sent rather than to an earlier preview that a
+        concurrent commit could have invalidated.
+        """
         if status not in exchange.RESPONSE_STATUSES:
             raise ConnectorError("Context Pull Response status is invalid.")
         with _file_lock(self.lock_path(alias)):
@@ -1338,7 +1703,7 @@ class TeamConnector:
             state_path = self.exchange_state_path(alias, "inbound", request_id)
             if not state_path.exists():
                 raise ConnectorError("Inbound Context Pull Request was not found.")
-            state = bridge.load_protected_json(state_path)
+            state = self._load_state(state_path)
             if state.get("state") != "open":
                 raise ConnectorError(
                     "Context Pull Request already has a final response."
@@ -1365,6 +1730,17 @@ class TeamConnector:
                 head, selected_claims, has_lifecycle_removal = (
                     self._requested_claim_ids(ledger, verified_request)
                 )
+                if authorize is not None:
+                    # Called before the status branches so a standing
+                    # authorization also governs the lifecycle-removal and
+                    # no-change answers, not only the fulfilled one.
+                    authorize(
+                        verified_request,
+                        head,
+                        selected_claims,
+                        ledger,
+                        has_lifecycle_removal,
+                    )
                 if has_lifecycle_removal:
                     effective_status = "needs-clarification"
                     effective_note = note or (
@@ -1987,6 +2363,41 @@ def command_respond(args: argparse.Namespace) -> None:
     )
 
 
+def command_policy(args: argparse.Namespace) -> None:
+    connector = TeamConnector(args.home)
+    changes: dict[str, Any] = {}
+    if args.enable:
+        changes["enabled"] = True
+    if args.disable:
+        changes["enabled"] = False
+    for field in (
+        "max_sensitivity",
+        "max_claims",
+        "max_bytes",
+        "max_responses_per_hour",
+    ):
+        value = getattr(args, field, None)
+        if value is not None:
+            changes[field] = value
+    for field in ("allowed_peers", "allowed_kinds", "denied_labels"):
+        value = getattr(args, field, None)
+        if value is not None:
+            changes[field] = value
+    if changes:
+        policy = connector.set_auto_policy(args.project, changes)
+    else:
+        policy = connector.auto_policy(args.project)
+    _print({"project": args.project, "auto_respond": policy})
+
+
+def command_auto_respond(args: argparse.Namespace) -> None:
+    _print(
+        TeamConnector(args.home).auto_respond(
+            args.project, args.ledger_project, dry_run=args.dry_run
+        )
+    )
+
+
 def command_incident_ask(args: argparse.Namespace) -> None:
     _print(
         incident.ask(
@@ -2083,6 +2494,24 @@ def command_run(args: argparse.Namespace) -> None:
                     args.max_sensitivity,
                 )
             result = active.sync(args.project, args.ledger_project)
+            automatic = None
+            if getattr(args, "auto_respond", False):
+                # auto_respond never raises for an individual request, but a
+                # project-level failure (an invalid policy, an unreadable
+                # config) still must not kill a transport daemon.  Degrade to a
+                # reported referral and keep syncing.
+                try:
+                    automatic = active.auto_respond(args.project, args.ledger_project)
+                except (ConnectorError, OSError, SecurityError, ValueError) as failure:
+                    automatic = {
+                        "project": args.project,
+                        "error": str(failure),
+                        "needs_human": True,
+                    }
+                if automatic.get("answered"):
+                    # Deliver the queued answers in this tick instead of
+                    # waiting a full interval for the next flush.
+                    result = active.sync(args.project, args.ledger_project)
             consecutive_failures = 0
             _print(
                 {
@@ -2090,6 +2519,7 @@ def command_run(args: argparse.Namespace) -> None:
                     "status": "ok",
                     "synced_at": int(time.time()),
                     "publication": publication,
+                    "auto_respond": automatic,
                     **result,
                 }
             )
@@ -2206,6 +2636,85 @@ def build_parser() -> argparse.ArgumentParser:
     respond.add_argument("--note", default="")
     respond.set_defaults(handler=command_respond)
 
+    policy = commands.add_parser(
+        "policy",
+        help="Show or change the standing authorization for answering requests.",
+        description=(
+            "A standing authorization lets this endpoint answer in-scope "
+            "Context Pull Requests without a human. It never covers restricted "
+            "context, credential findings, raw transcripts, unrelated context, "
+            "scope expansion, or a ledger with unresolved conflicts; those "
+            "always refer to a person. Run with no changes to show the "
+            "current policy."
+        ),
+    )
+    policy.add_argument("--project", required=True)
+    policy.add_argument(
+        "--enable", action="store_true", help="Turn standing authorization on."
+    )
+    policy.add_argument(
+        "--disable", action="store_true", help="Turn standing authorization off."
+    )
+    policy.add_argument(
+        "--max-sensitivity",
+        dest="max_sensitivity",
+        choices=("public", "internal", "confidential"),
+        help="Highest sensitivity an automatic answer may disclose.",
+    )
+    policy.add_argument(
+        "--allowed-peers",
+        dest="allowed_peers",
+        nargs="*",
+        metavar="PRINCIPAL",
+        help=(
+            "Principals that may be answered automatically. Required to enable; "
+            "an empty list authorizes nobody, never everybody."
+        ),
+    )
+    policy.add_argument(
+        "--allowed-kinds",
+        dest="allowed_kinds",
+        nargs="*",
+        metavar="KIND",
+        help=(
+            "Claim kinds an automatic answer may cover. Required to enable; "
+            "checked against what is actually disclosed, not only what was asked."
+        ),
+    )
+    policy.add_argument(
+        "--denied-labels",
+        dest="denied_labels",
+        nargs="*",
+        metavar="LABEL",
+        help="Any claim carrying one of these labels refers to a human.",
+    )
+    policy.add_argument("--max-claims", dest="max_claims", type=int)
+    policy.add_argument("--max-bytes", dest="max_bytes", type=int)
+    policy.add_argument(
+        "--max-responses-per-hour", dest="max_responses_per_hour", type=int
+    )
+    policy.set_defaults(handler=command_policy)
+
+    auto_respond = commands.add_parser(
+        "auto-respond",
+        help="Answer every open request the standing authorization allows.",
+        description=(
+            "Evaluates each open inbound Context Pull Request against this "
+            "project's standing authorization and answers the ones it covers. "
+            "Everything else is left open and reported for a human, with the "
+            "exact reasons. Use --dry-run to see the decisions without "
+            "answering anything."
+        ),
+    )
+    auto_respond.add_argument("--project", required=True)
+    auto_respond.add_argument("--ledger-project", required=True)
+    auto_respond.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Evaluate and report without sending any answer.",
+    )
+    auto_respond.set_defaults(handler=command_auto_respond)
+
     incident_parser = commands.add_parser(
         "incident",
         help="On-call incident handoff: ask, brief, and open-state triage.",
@@ -2301,6 +2810,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-sensitivity",
         choices=("public", "internal", "confidential", "restricted"),
         default="internal",
+    )
+    run.add_argument(
+        "--auto-respond",
+        action="store_true",
+        help=(
+            "After each sync, answer open requests the project's standing "
+            "authorization allows. Requires 'team policy --enable'."
+        ),
     )
     run.add_argument("--iterations", type=int, default=0, help=argparse.SUPPRESS)
     run.set_defaults(handler=command_run)

@@ -1,6 +1,15 @@
 ---
 name: braid
-description: Braid synchronizes governed, provenance-linked context between existing Claude Code and Codex sessions locally, through temporary public rooms, or asynchronously through a self-hosted Team Hub. Use for team catch-ups, coding/research handoffs, on-call incident handoffs, scheduled project checkpoints, semantic context diffs, recipient-minimized signed Context Packs, conflict reconciliation, synchronized summaries, or secure agent collaboration.
+description: Braid synchronizes governed, provenance-linked context between existing Claude Code, Codex, and Nous Hermes Agent sessions locally, through temporary public rooms, or asynchronously through a self-hosted Team Hub. Use for team catch-ups, coding/research handoffs, on-call incident handoffs, scheduled project checkpoints, semantic context diffs, recipient-minimized signed Context Packs, conflict reconciliation, synchronized summaries, or secure agent collaboration.
+version: 0.5.0
+license: Apache-2.0
+platforms: [linux, macos, windows]
+metadata:
+  hermes:
+    tags: [context, handoff, provenance, governance, multi-agent, mcp, a2a]
+    homepage: https://github.com/trigga6006/braid
+prerequisites:
+  commands: [python3]
 ---
 
 # Braid
@@ -22,8 +31,9 @@ Every command below goes through one front door, `python "<skill-dir>/scripts/br
 ## Start with the local handoff
 
 When the user wants to catch up another session on this same computer — "catch
-Codex up," "bring my other session up to speed," "hand this off" — run the local
-handoff first. It is one command and needs no pairing, safety code, or peer:
+Codex up," "catch Hermes up," "bring my other session up to speed," "hand this
+off" — run the local handoff first. It is one command and needs no pairing,
+safety code, or peer:
 
 ```text
 python "<skill-dir>/scripts/braid_cli.py" handoff --from "<session>" --project "<ledger-project>"
@@ -374,5 +384,42 @@ Do not edit vendor session files, live-resume the driver as its own peer, recurs
 ```text
 python "<skill-dir>/scripts/braid_cli.py" session doctor
 ```
+
+## Answer requests without a human
+
+When the user wants an endpoint to keep serving a trusted peer's recurring
+questions while they are away, use standing authorization rather than staying
+in the loop for every exchange:
+
+```text
+python "<skill-dir>/scripts/braid_cli.py" team policy --project "<alias>" --enable --allowed-peers "<principal>" --allowed-kinds decision blocker
+python "<skill-dir>/scripts/braid_cli.py" team auto-respond --project "<alias>" --ledger-project "<project>" --dry-run
+```
+
+Run `--dry-run` first and report the decisions before enabling anything for
+real. Then either run `auto-respond` on demand or add `--auto-respond` to
+`team run`.
+
+This is a ceiling, not a widening. Automation only answers Context Pull
+Requests; it never accepts inbound context, resolves a conflict, approves a
+stage, or publishes a head. It refuses on divergent heads or open conflicts,
+restricted sensitivity, a secret-scanner finding, raw transcript provenance,
+context the request did not ask for, a lifecycle removal in the requested
+window, an unlisted peer, a kind outside policy, a denied label, a ceiling
+overrun, or the hourly rate limit. Referred requests stay `open` for a person.
+
+Report `needs_human` and the exact blockers back to the user rather than
+retrying or widening the policy to make a refusal go away. Treat a blocker as
+the signal it is: the policy is doing its job.
+
+## Work with Nous Hermes Agent
+
+Hermes sessions are discovered, exported, and handed off like Codex and Claude ones — `--provider hermes` narrows any of those commands. Three differences follow from how Hermes works, and all three matter when reporting results:
+
+- **Export runs through the Hermes CLI, not a transcript file.** Hermes keeps conversations in a SQLite store (`state.db`) rather than one file per session, so Braid reads only session *metadata* from that store, read-only, and exports message text with `hermes sessions export - --format trace`. That subcommand emits Claude Code transcript JSONL and applies Hermes' own secret redaction; Braid never passes `--no-redact`. The `hermes` executable must therefore be on `PATH` for export and handoff — `session doctor` reports whether it is.
+- **Live Hermes turns are refused.** `session ask --provider hermes` does not run. Hermes' one-shot mode documents that approvals are auto-bypassed, and it offers no verified way to resume a turn with tools disabled, so a resumed session's own persisted text could reach write-capable tools with no gate. `codex exec` and `claude -p` keep their own gates; Hermes does not. Use `session export` or `handoff`, which read the session without executing anything. Do not present this as a bug to work around.
+- **The zero-ceremony handoff is first-party only.** Hermes stores Telegram, Discord, Slack, web-UI, and cron conversations in the same local database, and those turns were authored by remote people. A local database proves location, not authorship, so `handoff` accepts only `cli` and `tui` sessions and refuses the rest with a pointer to the governed path. That refusal is a real trust boundary — route the session through extract, review, and disclose instead.
+
+`HERMES_HOME` overrides the store location. Braid resolves the default the way Hermes does — `%LOCALAPPDATA%\hermes` on Windows, `~/.hermes` elsewhere — so a default install needs no configuration.
 
 Read [references/team-hub.md](references/team-hub.md) for asynchronous self-hosting, [references/context-pull-request.md](references/context-pull-request.md) for the signed request/response contract, [references/network-mode.md](references/network-mode.md) for temporary-room protocol/security details, [references/context-ledger.md](references/context-ledger.md) for semantic invariants, [references/product-map.md](references/product-map.md) for competitive boundaries, and [references/surfaces.md](references/surfaces.md) for application compatibility.

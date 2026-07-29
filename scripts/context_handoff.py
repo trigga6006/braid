@@ -127,6 +127,7 @@ def _local_session_roots() -> list[Path]:
         braid_session.codex_home(),
         braid_session.claude_home(),
         *braid_session.claude_desktop_roots(),
+        braid_session.hermes_home(),
     ]
 
 
@@ -167,6 +168,11 @@ def _discard_stage(ledger: ContextLedger, stage_id: str) -> None:
 def assert_source_is_local(session: Any) -> None:
     """Prove the source session is this user's own local session on this host."""
     transcript = getattr(session, "transcript", None)
+    if transcript is None and getattr(session, "export_mode", "file") == "cli":
+        # Hermes keeps its conversations in a SQLite store rather than one file
+        # per session, so the locality proof is anchored on that store instead.
+        _assert_cli_source_is_local(session)
+        return
     if transcript is None:
         _refuse(
             "The source session has no local transcript (it lives only in a "
@@ -188,6 +194,40 @@ def assert_source_is_local(session: Any) -> None:
         _refuse(
             f"The source transcript {shown} is outside this user's own "
             "session stores, so it may belong to a different principal."
+        )
+
+
+def _assert_cli_source_is_local(session: Any) -> None:
+    """Prove a CLI-exported session is this user's own, on this host.
+
+    A local store is necessary but not sufficient.  Hermes keeps gateway
+    conversations (Telegram, Discord, Slack, the web UI, cron) in the very same
+    local database, and their turns were authored by remote third parties.
+    Location cannot vouch for authorship, so the origin is checked too and the
+    zero-ceremony path is reserved for first-party sessions.
+    """
+    if getattr(session, "provider", "") != "hermes":
+        _refuse("This session's provider cannot prove a local source store.")
+    source = braid_session.hermes_source(session)
+    if source not in braid_session.HERMES_LOCAL_SOURCES:
+        _refuse(
+            f"This Hermes session came from '{terminal_safe(source, 40)}', so its "
+            "turns were authored through a remote gateway rather than by you at "
+            "this machine. A local database cannot prove same-principal "
+            "authorship. Use the governed path (extract, review, disclose) "
+            "instead of the zero-ceremony handoff."
+        )
+    store = braid_session.hermes_state_db()
+    shown = terminal_safe(store, 200)
+    if not _is_local_path(store):
+        _refuse(f"The Hermes session store {shown} is not on local storage.")
+    if not store.is_file():
+        _refuse(f"The Hermes session store {shown} is not a readable file.")
+    home = braid_session.hermes_home()
+    if not _is_local_path(home) or not _within(store, home):
+        _refuse(
+            f"The Hermes session store {shown} is outside this user's own "
+            "Hermes home, so it may belong to a different principal."
         )
 
 
@@ -323,7 +363,10 @@ def _preview(claims: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _next_argv(project: str, home: Path | str | None, *tail: str) -> list[str]:
-    argv = ["braid", "--project", project]
+    # The upgrade path continues in the ``ledger`` group, and the front door
+    # resolves argv[1] as a group name, so it has to be named here for the
+    # array to be runnable verbatim.
+    argv = ["braid", "ledger", "--project", project]
     if home is not None:
         argv.extend(("--home", str(home)))
     return [*argv, *tail]
@@ -355,12 +398,7 @@ def run_handoff(
     ledger = _open_local_ledger(project, home)
     status = assert_destination_is_same_principal(ledger, destination_principal)
 
-    reader = (
-        braid_session.extract_codex
-        if session.provider == "codex"
-        else braid_session.extract_claude
-    )
-    messages = reader(session.transcript)
+    messages = braid_session.extract_session_messages(session)
     chosen, omitted = braid_session.limited_messages(messages, budget)
     try:
         extraction = extract_messages(chosen)

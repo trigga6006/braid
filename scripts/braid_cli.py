@@ -39,7 +39,7 @@ GROUPS: dict[str, Group] = {
         "braid_session",
         (),
         "braid session",
-        "Discover, resolve, export, or ask a local Claude/Codex session",
+        "Discover, resolve, export, or ask a local Claude/Codex/Hermes session",
     ),
     "ledger": Group(
         "context_bridge",
@@ -88,7 +88,7 @@ def usage() -> str:
     lines = [
         "usage: braid <group> [args...]",
         "",
-        "Governed context synchronization for existing Claude Code and Codex sessions.",
+        "Governed context synchronization for existing Claude Code, Codex, and Hermes sessions.",
         "",
         "groups:",
     ]

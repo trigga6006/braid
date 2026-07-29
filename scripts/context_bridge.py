@@ -10,6 +10,7 @@ import sys
 import tempfile
 from typing import Any
 
+import braid_session
 from context_adapters import a2a_artifact_to_bundle, bundle_to_a2a_artifact
 from context_extract import extract_markdown_claims, extract_message_claims
 from context_store import ContextLedger, _atomic_json, _read_untrusted_json
@@ -53,7 +54,10 @@ def _ledger(args: argparse.Namespace) -> ContextLedger:
 
 
 def _next_argv(args: argparse.Namespace, *tail: str) -> list[str]:
-    argv = ["braid", "--project", args.project]
+    # This parser is reached through the ``ledger`` group of the front door, so
+    # the group name has to be in the array: ``braid`` resolves argv[1] as a
+    # group and rejects ``--project`` outright.
+    argv = ["braid", "ledger", "--project", args.project]
     if args.principal:
         argv.extend(("--principal", args.principal))
     if args.home:
@@ -69,16 +73,10 @@ def cmd_extract(args: argparse.Namespace) -> None:
             _local(args.markdown).read_text(encoding="utf-8")
         )
     else:
-        import braid_session
-
         session = braid_session.resolve_session(args.session, args.provider)
-        if session.transcript is None:
+        if not session.transcript_available():
             raise ValueError("The selected session has no locally readable transcript.")
-        messages = (
-            braid_session.extract_codex(session.transcript)
-            if session.provider == "codex"
-            else braid_session.extract_claude(session.transcript)
-        )
+        messages = braid_session.extract_session_messages(session)
         claims = extract_message_claims(messages)
     result = {"claims": claims, "count": len(claims), "requires_review": True}
     if args.stage:
@@ -369,7 +367,10 @@ def build_parser() -> argparse.ArgumentParser:
         cmd_extract,
         "Extract reviewable claims from a session or curated Markdown",
         (("--session",), {}),
-        (("--provider",), {"choices": ("all", "codex", "claude"), "default": "all"}),
+        (
+            ("--provider",),
+            {"choices": braid_session.PROVIDER_CHOICES, "default": "all"},
+        ),
         (("--markdown",), {}),
         (("--output",), {}),
         (("--stage",), {"action": "store_true"}),

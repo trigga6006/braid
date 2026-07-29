@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Discover, export, and safely resume local Codex and Claude Code sessions."""
+"""Discover, export, and safely resume local Codex, Claude Code, and Hermes sessions."""
 
 from __future__ import annotations
 
@@ -10,10 +10,21 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
+import sqlite3
 import subprocess
 import sys
+import tempfile
+import threading
 import uuid
 from typing import Any, Iterable
+
+
+# Every provider Braid can discover.  Adding one here plus a discover_/extract_
+# entry in DISCOVERY/EXTRACTORS is the whole registration surface; no argparse
+# choices tuple or dispatch ternary is duplicated anywhere else.
+PROVIDERS = ("codex", "claude", "hermes")
+PROVIDER_CHOICES = ("all", *PROVIDERS)
 
 
 @dataclasses.dataclass
@@ -28,6 +39,14 @@ class Session:
     updated: float = 0.0
     archived: bool = False
     aliases: tuple[str, ...] = ()
+    # "file": the transcript is a readable path on disk.  "cli": the provider
+    # owns its store (Hermes keeps SQLite) and only its own CLI may export it.
+    export_mode: str = "file"
+
+    def transcript_available(self) -> bool:
+        if self.export_mode == "cli":
+            return bool(self.session_id)
+        return self.transcript is not None
 
     def public(self) -> dict[str, Any]:
         return {
@@ -39,7 +58,7 @@ class Session:
             "cwd": self.cwd,
             "updated": iso_time(self.updated),
             "archived": self.archived,
-            "transcript_available": self.transcript is not None,
+            "transcript_available": self.transcript_available(),
             "aliases": list(
                 dict.fromkeys((self.session_id, self.resume_id, *self.aliases))
             ),
@@ -116,6 +135,116 @@ def claude_desktop_roots() -> list[Path]:
         if root not in unique:
             unique.append(root)
     return unique
+
+
+def hermes_home() -> Path:
+    """Resolve the Hermes Agent home the same way Hermes itself does.
+
+    Hermes is platform-native rather than always ``~/.hermes``: on Windows it
+    defaults to ``%LOCALAPPDATA%/hermes``.  Mirroring its own resolution order
+    keeps discovery working for a default install on every platform.
+    """
+    override = os.environ.get("HERMES_HOME", "").strip()
+    if override:
+        return Path(override).expanduser()
+    if sys.platform == "win32":
+        local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
+        base = (
+            Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
+        )
+        return base / "hermes"
+    return Path.home() / ".hermes"
+
+
+def hermes_state_db() -> Path:
+    # Absolute: a relative HERMES_HOME would make Path.as_uri() raise and
+    # silently hide every Hermes session.
+    return (hermes_home() / "state.db").expanduser().absolute()
+
+
+# Hermes records where each session came from.  Only these are the local
+# operator's own first-party sessions.  Every other source (telegram, discord,
+# slack, whatsapp, signal, webui, acp, gateway, cron) carries turns authored by
+# remote third parties, which the local store's location cannot vouch for.
+HERMES_LOCAL_SOURCES = frozenset({"cli", "tui"})
+
+
+def hermes_source(session: Session) -> str:
+    """Return the Hermes-recorded origin of a discovered session."""
+    prefix = "hermes-"
+    surface = session.surface
+    return surface[len(prefix) :] if surface.startswith(prefix) else surface
+
+
+# Metadata only: discovery never reads message bodies out of the Hermes store.
+# Transcript text is exported through the Hermes CLI so its own redaction runs.
+_HERMES_DISCOVERY_SQL = """
+    SELECT id, source, title, cwd, git_repo_root, archived,
+           COALESCE(
+               (SELECT MAX(m.timestamp) FROM messages m
+                WHERE m.session_id = sessions.id),
+               sessions.started_at
+           ) AS last_active
+    FROM sessions
+    ORDER BY last_active DESC
+    LIMIT ?
+"""
+
+MAX_HERMES_SESSIONS = 500
+
+
+def discover_hermes() -> list[Session]:
+    database = hermes_state_db()
+    if not database.exists():
+        return []
+    # Read-only URI: Braid never writes to or migrates another product's store.
+    # This is not lock-free -- a WAL reader still takes shared read locks and
+    # SQLite may touch -shm/-wal sidecars -- so the query is metadata-only and
+    # bounded.  Any driver/schema problem degrades to "no sessions" rather than
+    # failing discovery for every other provider.
+    try:
+        connection = sqlite3.connect(
+            f"{database.as_uri()}?mode=ro", uri=True, timeout=2.0
+        )
+    except (sqlite3.Error, ValueError, OSError):
+        return []
+    sessions: list[Session] = []
+    try:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            _HERMES_DISCOVERY_SQL, (MAX_HERMES_SESSIONS,)
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        connection.close()
+    for row in rows:
+        session_id = str(row["id"] or "")
+        if not session_id:
+            continue
+        source = str(row["source"] or "cli")
+        title = str(row["title"] or "")
+        cwd = str(row["git_repo_root"] or row["cwd"] or "")
+        try:
+            updated = float(row["last_active"] or 0.0)
+        except (TypeError, ValueError):
+            updated = 0.0
+        sessions.append(
+            Session(
+                provider="hermes",
+                surface=f"hermes-{source}",
+                session_id=session_id,
+                resume_id=session_id,
+                transcript=None,
+                title=title,
+                cwd=cwd,
+                updated=updated,
+                archived=bool(row["archived"]),
+                aliases=(title,) if title else (),
+                export_mode="cli",
+            )
+        )
+    return sessions
 
 
 def first_codex_meta(path: Path) -> dict[str, Any]:
@@ -278,12 +407,18 @@ def discover_claude() -> list[Session]:
     return list(found.values())
 
 
+DISCOVERY = {
+    "codex": discover_codex,
+    "claude": discover_claude,
+    "hermes": discover_hermes,
+}
+
+
 def discover(provider: str = "all") -> list[Session]:
     sessions: list[Session] = []
-    if provider in ("all", "codex"):
-        sessions.extend(discover_codex())
-    if provider in ("all", "claude"):
-        sessions.extend(discover_claude())
+    for name, discovery in DISCOVERY.items():
+        if provider in ("all", name):
+            sessions.extend(discovery())
     return sorted(sessions, key=lambda item: item.updated, reverse=True)
 
 
@@ -372,8 +507,19 @@ def extract_codex(path: Path) -> list[Message]:
 
 
 def extract_claude(path: Path) -> list[Message]:
+    return claude_records_to_messages(read_jsonl(path))
+
+
+def claude_records_to_messages(
+    records: Iterable[dict[str, Any]],
+) -> list[Message]:
+    """Normalize Claude Code transcript JSONL records into plain messages.
+
+    Shared by the on-disk Claude reader and the Hermes exporter, which emits
+    this same record shape via `hermes sessions export --format trace`.
+    """
     messages: list[Message] = []
-    for record in read_jsonl(path):
+    for record in records:
         kind = record.get("type")
         if kind not in ("user", "assistant") or record.get("isSidechain"):
             continue
@@ -397,6 +543,232 @@ def extract_claude(path: Path) -> list[Message]:
                 )
             )
     return dedupe_messages(messages)
+
+
+def safe_cli_identifier(value: str, label: str) -> str:
+    """Reject an identifier that a peer CLI would parse as an option.
+
+    Session IDs come from another product's store, so they are untrusted input
+    even though they are normally UUIDs.
+    """
+    if not value:
+        raise SystemExit(f"This session has no {label}.")
+    if value.startswith("-"):
+        raise SystemExit(f"This session's {label} is not a valid identifier.")
+    return value
+
+
+def require_hermes_cli() -> str:
+    executable = shutil.which("hermes")
+    if not executable:
+        raise SystemExit(
+            "The hermes CLI was not found on PATH. Braid exports Hermes "
+            "sessions through it so Hermes' own secret redaction runs. "
+            "Run doctor for details."
+        )
+    return executable
+
+
+def extract_hermes(session: Session) -> list[Message]:
+    """Export one Hermes session through its own CLI and normalize it.
+
+    `--format trace` emits Claude Code transcript JSONL, and forces Hermes'
+    secret redaction unless explicitly disabled.  Braid never passes
+    `--no-redact`, so exported text is redacted before it reaches the ledger.
+    """
+    executable = require_hermes_cli()
+    session_id = safe_cli_identifier(session.session_id, "session ID")
+    command = [
+        executable,
+        "sessions",
+        "export",
+        "-",
+        "--format",
+        "trace",
+        "--session-id",
+        session_id,
+    ]
+    # Spool to a temporary file rather than a pipe, under a cap enforced while
+    # the child is still writing: neither memory nor the temporary volume may
+    # be exhausted by a runaway export, and another product's stderr is equally
+    # untrusted so it is bounded too.
+    # ignore_cleanup_errors: on a timeout the spool thread may still hold the
+    # export file open on Windows.  Failing to remove a temp file must not mask
+    # the real timeout error.
+    with tempfile.TemporaryDirectory(
+        prefix="braid-hermes-", ignore_cleanup_errors=True
+    ) as workspace:
+        out_path = Path(workspace) / "export.jsonl"
+        code, detail = _spool_bounded(
+            command, out_path, MAX_SESSION_FILE_BYTES, HERMES_EXPORT_TIMEOUT
+        )
+        if code != 0:
+            raise SystemExit(
+                f"Hermes session export failed (exit {code}):\n{detail or 'unknown error'}"
+            )
+        return claude_records_to_messages(read_jsonl(out_path))
+
+
+MAX_PEER_ERROR_BYTES = 4096
+HERMES_EXPORT_TIMEOUT = 180.0
+_SPOOL_CHUNK = 65_536
+_TEARDOWN_GRACE = 5.0
+
+
+def _drain_bounded(stream: Any, limit: int, kept: bytearray) -> None:
+    """Read a stream to EOF, retaining only its first `limit` bytes.
+
+    Draining continues past the limit so the child never blocks on a full pipe.
+    """
+    try:
+        while True:
+            chunk = (
+                stream.read1(_SPOOL_CHUNK)
+                if hasattr(stream, "read1")
+                else stream.read(_SPOOL_CHUNK)
+            )
+            if not chunk:
+                return
+            if len(kept) < limit:
+                kept.extend(chunk[: limit - len(kept)])
+    except (OSError, ValueError):
+        return
+
+
+def _kill_tree(process: subprocess.Popen) -> None:
+    """Terminate the child and every descendant still holding its pipes.
+
+    Killing only the direct child is not enough: a grandchild that inherited
+    the stdout write end keeps the reader blocked, which would hang an
+    unattended agent with nobody present to interrupt it.
+    """
+    # Deliberately not skipped when the direct child has already exited: a
+    # descendant can outlive it and still hold the inherited pipe.
+    try:
+        if sys.platform == "win32":
+            subprocess.run(  # noqa: S603 - fixed argv, never a shell
+                ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=10,
+            )
+        else:
+            # start_new_session makes the child its own group leader, so the
+            # group id is its pid and remains valid for descendants even after
+            # the direct child exits.
+            os.killpg(process.pid, signal.SIGKILL)
+        return
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        process.kill()
+    except OSError:
+        pass
+
+
+def _spool_bounded(
+    command: list[str], destination: Path, limit: int, timeout: float
+) -> tuple[int, str]:
+    """Run `command`, writing stdout to `destination` under a hard byte cap.
+
+    Returns the exit code and a bounded slice of stderr.  The child is killed
+    the moment stdout exceeds `limit` or the deadline passes, so the cap holds
+    during output rather than only after the process exits.
+    """
+    process = subprocess.Popen(  # noqa: S603 - fixed argv, never a shell
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        # Own process group on POSIX so the whole tree can be signalled; on
+        # Windows the equivalent sweep is taskkill /T in _kill_tree.
+        start_new_session=sys.platform != "win32",
+    )
+    errors = bytearray()
+    overflowed: list[bool] = []
+
+    def _pump() -> None:
+        # Runs on a daemon thread so a descendant holding the inherited pipe
+        # can never block the caller past the deadline -- the read is abandoned
+        # rather than waited on.
+        try:
+            with destination.open("wb") as handle:
+                written = 0
+                while True:
+                    chunk = process.stdout.read1(_SPOOL_CHUNK)
+                    if not chunk:
+                        return
+                    written += len(chunk)
+                    if written > limit:
+                        overflowed.append(True)
+                        _kill_tree(process)
+                        return
+                    handle.write(chunk)
+        except (OSError, ValueError):
+            return
+
+    pump = threading.Thread(target=_pump, daemon=True)
+    drain = threading.Thread(
+        target=_drain_bounded,
+        args=(process.stderr, MAX_PEER_ERROR_BYTES, errors),
+        daemon=True,
+    )
+    pump.start()
+    drain.start()
+    pump.join(timeout)
+    timed_out = pump.is_alive()
+    if timed_out or overflowed:
+        _kill_tree(process)
+    pump.join(_TEARDOWN_GRACE)
+    try:
+        process.wait(timeout=_TEARDOWN_GRACE)
+    except subprocess.TimeoutExpired:  # pragma: no cover - kill already sent
+        _kill_tree(process)
+    drain.join(_TEARDOWN_GRACE)
+    # Closing a pipe whose reader thread is still blocked inside read1() waits
+    # on that thread's buffer lock, which would reintroduce the very hang this
+    # design removes.  A stream whose reader has not finished is abandoned to
+    # its daemon thread instead; it is released when the descendant exits.
+    for stream, reader in ((process.stdout, pump), (process.stderr, drain)):
+        if stream is not None and not reader.is_alive():
+            try:
+                stream.close()
+            except (OSError, ValueError):  # pragma: no cover - already closed
+                pass
+    if timed_out:
+        raise SystemExit(
+            f"The Hermes session export timed out after {int(timeout)} seconds."
+        )
+    if overflowed:
+        raise SystemExit(
+            "The Hermes session export exceeds the safe transcript size limit."
+        )
+    return process.returncode, errors.decode("utf-8", errors="replace").strip()
+
+
+def read_jsonl_text(text: str) -> Iterable[dict[str, Any]]:
+    for line in text.splitlines():
+        try:
+            value = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(value, dict):
+            yield value
+
+
+def extract_session_messages(session: Session) -> list[Message]:
+    """Read one discovered session's conversation, whatever product owns it."""
+    if session.provider == "hermes":
+        return extract_hermes(session)
+    if session.transcript is None or not session.transcript.exists():
+        raise SystemExit(
+            "This session has no local transcript. Continue/import it to a local surface first."
+        )
+    if session.provider == "codex":
+        return extract_codex(session.transcript)
+    return extract_claude(session.transcript)
 
 
 def dedupe_messages(messages: list[Message]) -> list[Message]:
@@ -438,15 +810,7 @@ def limited_messages(
 
 
 def transcript_payload(session: Session, max_chars: int) -> dict[str, Any]:
-    if session.transcript is None or not session.transcript.exists():
-        raise SystemExit(
-            "This session has no local transcript. Continue/import it to a local surface first."
-        )
-    messages = (
-        extract_codex(session.transcript)
-        if session.provider == "codex"
-        else extract_claude(session.transcript)
-    )
+    messages = extract_session_messages(session)
     chosen, omitted = limited_messages(messages, max_chars)
     return {
         "session": session.public(),
@@ -495,6 +859,20 @@ def peer_prompt(prompt: str, request_id: str) -> str:
 
 
 def run_peer(session: Session, prompt: str, ephemeral: bool, dry_run: bool) -> str:
+    if session.provider == "hermes":
+        # Hermes' one-shot mode documents that "approvals are auto-bypassed",
+        # and it exposes no verified way to run a resumed turn with tools
+        # disabled.  A resumed session can carry hostile persisted text, so a
+        # live turn would let untrusted content reach write-capable tools with
+        # no approval boundary -- unlike `codex exec` and `claude -p`, which
+        # keep their own gates.  Read-only export and handoff carry no such
+        # risk, so refuse only the live turn rather than the whole provider.
+        raise SystemExit(
+            "Braid does not run live Hermes turns: `hermes -z` auto-bypasses "
+            "tool approvals, so a resumed session's own text could trigger "
+            "side effects with no gate. Use `session export` or `handoff` for "
+            "this session, which read it without executing anything."
+        )
     executable = shutil.which("codex" if session.provider == "codex" else "claude")
     if not executable:
         raise SystemExit(
@@ -504,10 +882,9 @@ def run_peer(session: Session, prompt: str, ephemeral: bool, dry_run: bool) -> s
         raise SystemExit(
             "This desktop session has no local resume ID. Continue/import it locally first."
         )
-    if session.resume_id.startswith("-"):
-        # resume_id comes from an untrusted vendor session file; a leading dash
-        # would be parsed as an option by the peer CLI.  Refuse it outright.
-        raise SystemExit("This session's resume ID is not a valid identifier.")
+    # resume_id comes from an untrusted vendor session file; a leading dash
+    # would be parsed as an option by the peer CLI.  Refuse it outright.
+    safe_cli_identifier(session.resume_id, "resume ID")
     bridged = peer_prompt(prompt, str(uuid.uuid4()))
     if session.provider == "codex":
         command = [executable, "exec", "resume", "--skip-git-repo-check"]
@@ -679,6 +1056,10 @@ def command_doctor(_: argparse.Namespace) -> None:
         "claude_desktop_roots": [str(path) for path in claude_desktop_roots()],
         "claude_desktop_metadata_count": len(by_desktop),
         "claude_desktop_cli_mappings": len(by_cli),
+        "hermes_cli": shutil.which("hermes"),
+        "hermes_home": str(hermes_home()),
+        "hermes_state_db_exists": hermes_state_db().exists(),
+        "hermes_sessions_readable": len(discover_hermes()),
     }
     print(json.dumps(report, indent=2))
 
@@ -688,9 +1069,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     list_parser = subparsers.add_parser("list", help="List discoverable local sessions")
-    list_parser.add_argument(
-        "--provider", choices=("all", "codex", "claude"), default="all"
-    )
+    list_parser.add_argument("--provider", choices=PROVIDER_CHOICES, default="all")
     list_parser.add_argument("--query", default="")
     list_parser.add_argument("--limit", type=int, default=20)
     list_parser.add_argument("--json", action="store_true")
@@ -700,18 +1079,14 @@ def build_parser() -> argparse.ArgumentParser:
         "resolve", help="Resolve an ID/title to one canonical session"
     )
     resolve_parser.add_argument("--session", required=True)
-    resolve_parser.add_argument(
-        "--provider", choices=("all", "codex", "claude"), default="all"
-    )
+    resolve_parser.add_argument("--provider", choices=PROVIDER_CHOICES, default="all")
     resolve_parser.set_defaults(function=command_resolve)
 
     export_parser = subparsers.add_parser(
         "export", help="Export normalized user/assistant transcript text"
     )
     export_parser.add_argument("--session", required=True)
-    export_parser.add_argument(
-        "--provider", choices=("all", "codex", "claude"), default="all"
-    )
+    export_parser.add_argument("--provider", choices=PROVIDER_CHOICES, default="all")
     export_parser.add_argument("--max-chars", type=int, default=200000)
     export_parser.add_argument(
         "--format", choices=("markdown", "json"), default="markdown"
@@ -723,9 +1098,7 @@ def build_parser() -> argparse.ArgumentParser:
         "ask", help="Send one focused turn to an idle peer session"
     )
     ask_parser.add_argument("--session", required=True)
-    ask_parser.add_argument(
-        "--provider", choices=("all", "codex", "claude"), default="all"
-    )
+    ask_parser.add_argument("--provider", choices=PROVIDER_CHOICES, default="all")
     ask_parser.add_argument("--prompt")
     ask_parser.add_argument("--prompt-file")
     ask_parser.add_argument("--stdin", action="store_true")
@@ -757,9 +1130,7 @@ def build_parser() -> argparse.ArgumentParser:
     handoff_parser.add_argument(
         "--project", required=True, help="Ledger project name; never a path."
     )
-    handoff_parser.add_argument(
-        "--provider", choices=("all", "codex", "claude"), default="all"
-    )
+    handoff_parser.add_argument("--provider", choices=PROVIDER_CHOICES, default="all")
     handoff_parser.add_argument(
         "--max-chars",
         type=int,

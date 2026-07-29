@@ -8,11 +8,11 @@
 
 [![Security tests](https://github.com/trigga6006/braid/actions/workflows/security-tests.yml/badge.svg)](https://github.com/trigga6006/braid/actions/workflows/security-tests.yml)
 ![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
-![Claude Code + Codex](https://img.shields.io/badge/Claude_Code_%E2%86%94_Codex-111827)
+![Claude Code + Codex + Hermes](https://img.shields.io/badge/Claude_Code_%E2%86%94_Codex_%E2%86%94_Hermes-111827)
 
 </div>
 
-Braid connects existing Claude Code and Codex sessions locally or across the public internet. Its Context Ledger turns useful session state into typed, provenance-linked, versioned claims; minimizes those claims for a named recipient; signs and encrypts the disclosure; then quarantines and reconciles it at the other end without silently choosing a winner.
+Braid connects existing Claude Code, Codex, and Nous Hermes Agent sessions locally or across the public internet. Its Context Ledger turns useful session state into typed, provenance-linked, versioned claims; minimizes those claims for a named recipient; signs and encrypts the disclosure; then quarantines and reconciles it at the other end without silently choosing a winner.
 
 For teams, the self-hosted Team Hub adds durable asynchronous mailboxes. Developers no longer need to start a temporary room at the same time: an endpoint connector can queue an approved Context Pack, the blind hub can retain its ciphertext while a teammate is offline, and the teammate's next sync places it into the existing Context Ledger quarantine. An optional always-on project agent can receive separately addressed checkpoints and produce scheduled project summaries.
 
@@ -55,6 +55,7 @@ Manual skill locations:
 |---|---|
 | Codex / ChatGPT | `~/.codex/skills/braid` |
 | Claude Code | `~/.claude/skills/braid` |
+| Nous Hermes Agent | `~/.hermes/skills/braid` |
 
 For the packaged developer CLIs:
 
@@ -76,6 +77,43 @@ braid mcp --project "<project>"                                 # stdio MCP serv
 ```
 
 The skill can also run its checked-in scripts directly with `python "<skill-dir>/scripts/braid_cli.py" <group> ...`, so a global package install is optional.
+
+### Nous Hermes Agent
+
+Hermes is a first-class Braid surface: its sessions are discoverable, exportable, and resumable exactly like Codex and Claude ones, and it can drive the full Context Ledger over MCP.
+
+Install the skill and register the MCP server:
+
+```bash
+hermes skills install https://github.com/trigga6006/braid
+python -m pip install "git+https://github.com/trigga6006/braid.git"
+```
+
+Then add the ledger server to `~/.hermes/config.yaml`:
+
+```yaml
+mcp_servers:
+  braid:
+    command: "braid"
+    args: ["mcp", "--project", "<ledger-project>"]
+```
+
+Without the package install, point the same entry at the checked-in script instead — `command: "python"`, `args: ["<skill-dir>/scripts/braid_cli.py", "mcp", "--project", "<ledger-project>"]`.
+
+Verify the wiring, which reports the Hermes home, whether `state.db` is present, and how many sessions are readable:
+
+```bash
+braid session doctor
+braid session list --provider hermes
+```
+
+Three Hermes-specific behaviors are worth knowing before you rely on them:
+
+- Message text is exported through `hermes sessions export --format trace`, so the `hermes` executable must be on `PATH`, and Hermes' own secret redaction runs before anything reaches the ledger.
+- **Live Hermes turns are refused.** `hermes -z` auto-bypasses tool approvals and offers no verified tools-disabled mode, so `session ask --provider hermes` deliberately does not run. Read-only `session export` and `handoff` are unaffected.
+- **The zero-ceremony handoff is first-party only.** Hermes stores Telegram, Discord, Slack, web-UI, and cron conversations in the same local database, and those turns are remote-authored. `handoff` accepts `cli` and `tui` sessions and refuses the rest, pointing at the governed path.
+
+See [references/surfaces.md](references/surfaces.md) for the full contract.
 
 ## Fastest agent workflow
 
@@ -226,6 +264,31 @@ braid team sync --project omni --ledger-project omni
 ```
 
 `respond` selects only matching active claims within the signed ceilings and queues one terminal response. Its output lists the exact selected claim IDs before the next `sync` sends it. A fulfilled answer is independently signed by the responding endpoint and by its Context Ledger, and the requester still receives only a quarantine token. `declined`, `needs-clarification`, and `no-change` responses contain no Context Pack. A matching lifecycle removal returns `needs-clarification` rather than silently presenting a partial delta; send a reviewed checkpoint until signed deletion tombstones are added to the protocol.
+
+### Standing authorization
+
+Answering a trusted peer's recurring questions does not have to keep a person in the loop. A per-project standing authorization lets an endpoint answer the requests it covers, unattended:
+
+```bash
+braid team policy \
+  --project omni --enable \
+  --allowed-peers "ed25519:<peer-key-id>" \
+  --allowed-kinds decision blocker constraint \
+  --max-sensitivity internal \
+  --max-claims 25 \
+  --max-responses-per-hour 12
+
+braid team auto-respond --project omni --ledger-project omni --dry-run
+braid team run --project omni --ledger-project omni --auto-respond
+```
+
+It is a ceiling, never a widening. Automation is disabled by default, upgrades land disabled, an unknown policy field is an error rather than a no-op, and an unparsable policy fails the project closed. Enabling requires an explicit peer list and at least one allowed kind — an empty list means "nothing", so trusting a new endpoint for ordinary exchange never also grants it unattended pull authority. Automation only ever *answers* — it never accepts inbound context, resolves a conflict, approves a stage, or publishes a head.
+
+These always refer to a human regardless of policy: divergent heads or unresolved conflicts, restricted sensitivity, a secret-scanner finding anywhere in scope, raw transcript provenance, context the request did not structurally ask for, and a lifecycle removal inside the requested window. `restricted` can never be authorized — the ceiling is capped at `confidential`.
+
+The decision is bound to the payload, not to a preview: it is re-evaluated inside the responder's lock against the exact claims about to be signed, so a commit landing mid-flight cannot widen an authorized answer.
+
+Every decision is appended to `<home>/team-autopolicy/<alias>.jsonl` with its reasons, recording claim identifiers and counts but never claim text. Referred requests stay `open` and remain answerable exactly as before. See [references/team-hub.md](references/team-hub.md) for the full gate list.
 
 An agent still uses `braid ledger` to extract, review, approve, and commit context. After that review gate, it can publish the current head separately to every teammate or only to project agents:
 

@@ -14,6 +14,7 @@ from unittest import mock
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
+import braid_cli  # noqa: E402
 import context_handoff  # noqa: E402
 import braid_session  # noqa: E402
 from context_security import scan_sensitive  # noqa: E402
@@ -171,6 +172,13 @@ class HandoffTests(unittest.TestCase):
             self.assertEqual(result["next_argv"][0], "braid")
             self.assertIn("plan", result["next_argv"])
             self.assertIn("--recipient", result["next_argv"])
+            # The array is printed for an agent to run verbatim, so run it
+            # verbatim: drop only the console-script name at argv[0].
+            stream = io.StringIO()
+            with contextlib.redirect_stdout(stream):
+                code = braid_cli.main(result["next_argv"][1:])
+            self.assertEqual(code, 0, " ".join(result["next_argv"]))
+            self.assertIn("claims", json.loads(stream.getvalue()))
 
     def test_dry_run_scans_everything_then_leaves_nothing_approvable(self):
         with self.workspace() as home:

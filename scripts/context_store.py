@@ -916,6 +916,21 @@ class ContextLedger:
             key=lambda item: (int(item["revision"]["sequence"]), item["id"]),
         )
 
+    def active_claims_at(
+        self, revision_id: str, now: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Active claims as of one revision, as a disclosure from it would see.
+
+        Distinct from `freshness`, which resolves the *current* heads. A caller
+        deciding whether a disclosure from `revision_id` is permitted must look
+        at that revision, since a later commit can change the current view
+        without changing what this disclosure will carry.
+        """
+        with _lock(self.lock_path):
+            return resolved_active_view(self._history(revision_id), now)[
+                "active_claims"
+            ]
+
     def freshness(self, now: str | None = None) -> dict[str, Any]:
         with _lock(self.lock_path):
             view = resolved_active_view(self.current_history(), now)

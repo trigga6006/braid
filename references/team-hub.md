@@ -125,10 +125,76 @@ Automation has two distinct jobs:
   raw vendor transcripts. Exact stage review and digest approval remain the
   default disclosure gate.
 
-A team policy may later allow low-sensitivity, in-scope claims to use a durable
+A project policy allows low-sensitivity, in-scope claims to use a durable
 pre-authorization. Credential findings, raw transcripts, unrelated context,
 restricted sensitivity, scope expansion, and semantic conflict always stop for
 review.
+
+## Standing authorization
+
+`braid team policy` records a per-project standing authorization, and
+`braid team auto-respond` answers every open Context Pull Request that
+authorization covers. `braid team run --auto-respond` does the same on each
+tick, so an unattended endpoint can serve recurring questions between peers
+that already trust each other.
+
+The policy is a ceiling, never a widening. It is disabled by default, upgrades
+land disabled, and an unparsable policy fails the project closed rather than
+falling back to a default the operator never wrote. An unknown field is an
+error, not a no-op, so a typo cannot silently authorize more than intended.
+Enabling requires an explicit peer list and at least one allowed kind: an empty
+list means "nothing", never "everything", so trusting a new endpoint for
+ordinary exchange never also grants it unattended pull authority.
+
+```bash
+braid team policy --project <alias> --enable \
+  --allowed-peers ed25519:<principal> \
+  --allowed-kinds decision blocker constraint \
+  --max-sensitivity internal --max-claims 25 --max-responses-per-hour 12
+braid team auto-respond --project <alias> --ledger-project <project> --dry-run
+```
+
+Every gate must affirmatively pass. These always refer to a human, whatever the
+policy says:
+
+- the ledger has divergent heads or unresolved semantic conflicts;
+- the request asks for, or the plan selects, restricted context;
+- the secret scanner flagged anything in scope;
+- the plan quotes a raw session transcript;
+- the plan carries context the request did not structurally ask for;
+- the requested window contains a lifecycle removal, where the honest answer is
+  `needs-clarification`.
+
+Relevance is structural only. A claim counts as requested when it matches the
+request's `kinds`, `semantic_keys`, or `labels`; lexical overlap with the
+request's purpose text does not qualify, because a purpose of "the" shares a
+word with almost any statement. A request declaring no selectors at all is a
+scope expansion by construction and always refers.
+
+Policy-configurable gates cover the peer allowlist, sensitivity ceiling (capped
+at `confidential` — `restricted` is never delegable), claim kinds, denied
+labels, claim and byte ceilings, and a per-hour rate limit. Kinds are checked
+against what would actually be disclosed, not only against what the request
+asked for, so a label-only request cannot pull a kind the policy never allowed.
+
+The decision is bound to the payload. It is evaluated once as a preview and
+again inside the responder's lock, against the exact claims about to be signed;
+if a commit lands in between and widens the answer, consent is withdrawn and
+the request refers instead. Every automatic answer records the source revision
+and exact claim identifiers, so the log can prove what was sent.
+
+Automation only ever *answers*. It never accepts inbound context, resolves a
+conflict, approves a stage, or publishes a head. Every decision is appended to
+`<home>/team-autopolicy/<alias>.jsonl` with its reasons; the log records claim
+identifiers and counts, never claim text. Requests that are referred stay
+`open` and remain answerable by a person exactly as before.
+
+The rate limit is a runaway-loop brake, not a security boundary. It is derived
+from that audit log, so deleting the log resets the count, and two connector
+processes racing on the same project could each answer once past the ceiling.
+Removing the log is an operator action, and the real limits on any answer are
+the trust gate, the policy ceilings, and the request's own signed ceilings —
+none of which depend on the log.
 
 ## Normal team lifecycle
 
@@ -182,6 +248,7 @@ release has one schema and no live multi-node migration path.
 - no automatic trust in newly listed endpoints or changed project roles;
 - no automatic resolution of semantic conflicts;
 - no promise that a closed vendor application can be awakened;
-- no standing-policy engine for automatically answering recurring requests;
+- no automatic acceptance, reconciliation, or publication: standing
+  authorization answers requests and does nothing else;
 - no SSO mapping until endpoint enrollment and the cryptographic protocol are
   proven in controlled team pilots.

@@ -2095,7 +2095,7 @@ def command_preview(args: argparse.Namespace) -> None:
 
 def command_host(args: argparse.Namespace) -> None:
     session = local.resolve_session(args.session, args.provider)
-    if session.transcript is None:
+    if not session.transcript_available():
         raise SystemExit("Hosting requires a local session transcript.")
     context = build_context(
         session,
@@ -3225,9 +3225,7 @@ def build_parser() -> argparse.ArgumentParser:
         "preview", help="Validate and preview a context packet before user approval"
     )
     preview.add_argument("--session", required=True)
-    preview.add_argument(
-        "--provider", choices=("all", "codex", "claude"), default="all"
-    )
+    preview.add_argument("--provider", choices=local.PROVIDER_CHOICES, default="all")
     add_context_arguments(preview)
     preview.add_argument("--json", action="store_true")
     preview.set_defaults(function=command_preview)
@@ -3242,7 +3240,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Expected key-derived local recipient ID (optional pin)",
     )
-    start.add_argument("--provider", choices=("all", "codex", "claude"), default="all")
+    start.add_argument("--provider", choices=local.PROVIDER_CHOICES, default="all")
     start.add_argument("--transport", choices=("public", "direct"), default="public")
     start.add_argument("--public-url", default="")
     start.add_argument("--advertise", default="")
@@ -3281,7 +3279,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Expected key-derived local recipient ID (optional pin)",
     )
-    host.add_argument("--provider", choices=("all", "codex", "claude"), default="all")
+    host.add_argument("--provider", choices=local.PROVIDER_CHOICES, default="all")
     host.add_argument("--transport", choices=("public", "direct"), default="public")
     host.add_argument(
         "--public-url",
@@ -3317,7 +3315,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Expected key-derived local recipient ID (optional pin)",
     )
-    join.add_argument("--provider", choices=("all", "codex", "claude"), default="all")
+    join.add_argument("--provider", choices=local.PROVIDER_CHOICES, default="all")
     join.add_argument("--timeout", type=float, default=20)
     add_context_arguments(join)
     add_message_arguments(join)
