@@ -10,6 +10,8 @@
 | Claude Code CLI | Yes | Yes, while idle | Uses `claude -p --resume <uuid>`. |
 | Nous Hermes Agent (`cli`, `tui`) | Yes, via its CLI | **No, refused** | Metadata is read from the SQLite store; text is exported with `hermes sessions export --format trace`. Live turns are refused because `-z` auto-bypasses tool approvals. |
 | Nous Hermes Agent (gateway sources) | Yes, via its CLI | **No, refused** | Telegram/Discord/Slack/web-UI/cron sessions export normally but are refused by the zero-ceremony handoff; their turns are remote-authored. Use the governed path. |
+| OpenClaw (`operator`, `talk`) | Yes, direct read-only | Yes, while idle | Metadata and transcript read from the per-agent SQLite store; live turns use `openclaw agent --session-key`. |
+| OpenClaw (channel/cron/spawn) | Yes, direct read-only | Yes, while idle | Exports normally but is refused by the zero-ceremony handoff; those turns are not the operator's. |
 | Codex cloud-only task | Usually no | No | Import or hand off the task to a local surface first. |
 | Claude remote/web-only session | Usually no | No | Teleport/continue it locally first when supported. |
 
@@ -38,6 +40,17 @@ The script discovers these without modifying them:
 - Claude Desktop metadata on Windows: `%APPDATA%/Claude/claude-code-sessions`.
 - Claude Desktop metadata on macOS: `~/Library/Application Support/Claude/claude-code-sessions`.
 - Hermes: `$HERMES_HOME/state.db`, falling back to Hermes' own platform default — `%LOCALAPPDATA%/hermes` on Windows, `~/.hermes` elsewhere. Opened read-only, metadata only.
+- OpenClaw: `$OPENCLAW_STATE_DIR`, else `~/.openclaw` (legacy `~/.clawdbot`) plus any `~/.openclaw-<profile>`, under `$OPENCLAW_HOME` when set. Per-agent stores at `agents/<agentId>/agent/openclaw-agent.sqlite`, opened read-only. The path is not platform-dependent: Windows uses the user profile, not LOCALAPPDATA.
+
+## OpenClaw specifics
+
+OpenClaw is the one surface Braid reads end to end from another product's database, because OpenClaw's own CLI deliberately redacts message text (`sessions tail` and `export-trajectory` both omit prompt bodies). Its schema is published in the product's source rather than its documentation, so every read is defensive and any mismatch degrades to "no sessions" instead of a guess. `session doctor` reports each store's `schema_version` so drift is visible.
+
+- **Identity is two-level.** `session_key` is the durable logical session and is what Braid reports and resumes; `current_session_id` is the transcript generation, which rotates on reset, fork, and compaction. Extraction re-resolves the generation at read time rather than caching it at discovery.
+- **Only the live branch is read.** Compaction and rewind leave superseded events in `transcript_events`, so Braid joins through `session_transcript_active_events`. An empty projection means an empty transcript, and a store that cannot supply the projection is refused outright rather than read from the raw log: replaying an abandoned branch would hand the ledger context the session has already moved past.
+- **Timestamps are milliseconds** (`Date.now()`), unlike Hermes' float seconds, and the per-event `timestamp` is an ISO string rather than a number.
+- **The tool role is `toolResult`**, and the first event of every transcript is a `session` header rather than a message; both fall out of the type/role filter.
+- **Live turns use `openclaw agent --session-key <key> --message … --json`**, which reserves stdout for the reply. Braid never passes `--deliver`, so a bridged turn answers the driver without broadcasting to the session's channels. An `in_flight` status is reported rather than retried, because the Gateway may already be running that turn.
 
 Claude Desktop exposes a desktop session ID and an underlying CLI session ID. The script accepts either and reports both.
 

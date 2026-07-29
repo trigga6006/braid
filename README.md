@@ -12,7 +12,7 @@
 
 </div>
 
-Braid connects existing Claude Code, Codex, and Nous Hermes Agent sessions locally or across the public internet. Its Context Ledger turns useful session state into typed, provenance-linked, versioned claims; minimizes those claims for a named recipient; signs and encrypts the disclosure; then quarantines and reconciles it at the other end without silently choosing a winner.
+Braid connects existing Claude Code, Codex, Nous Hermes Agent, and OpenClaw sessions locally or across the public internet. Its Context Ledger turns useful session state into typed, provenance-linked, versioned claims; minimizes those claims for a named recipient; signs and encrypts the disclosure; then quarantines and reconciles it at the other end without silently choosing a winner.
 
 For teams, the self-hosted Team Hub adds durable asynchronous mailboxes. Developers no longer need to start a temporary room at the same time: an endpoint connector can queue an approved Context Pack, the blind hub can retain its ciphertext while a teammate is offline, and the teammate's next sync places it into the existing Context Ledger quarantine. An optional always-on project agent can receive separately addressed checkpoints and produce scheduled project summaries.
 
@@ -56,6 +56,7 @@ Manual skill locations:
 | Codex / ChatGPT | `~/.codex/skills/braid` |
 | Claude Code | `~/.claude/skills/braid` |
 | Nous Hermes Agent | `~/.hermes/skills/braid` |
+| OpenClaw | `~/.openclaw/skills/braid` |
 
 For the packaged developer CLIs:
 
@@ -77,6 +78,31 @@ braid mcp --project "<project>"                                 # stdio MCP serv
 ```
 
 The skill can also run its checked-in scripts directly with `python "<skill-dir>/scripts/braid_cli.py" <group> ...`, so a global package install is optional.
+
+### OpenClaw
+
+OpenClaw sessions are discoverable, exportable, and resumable like any other surface, and OpenClaw can drive the Context Ledger over MCP.
+
+Register the ledger server in `~/.openclaw/openclaw.json`:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "braid": { "command": "braid", "args": ["mcp", "--project", "<ledger-project>"] }
+    }
+  }
+}
+```
+
+Then verify discovery:
+
+```bash
+braid session doctor
+braid session list --provider openclaw
+```
+
+Because OpenClaw's own CLI redacts message text, Braid reads its per-agent SQLite store directly and read-only — no Gateway required. Two behaviors to know: the zero-ceremony `handoff` accepts only `operator` and `talk` sessions, since `channel`, `cron`, and `spawn` sessions carry turns authored elsewhere; and a live turn runs `openclaw agent --session-key … --json` without `--deliver`, so the reply comes back to Braid rather than being broadcast to the session's channels. See [references/surfaces.md](references/surfaces.md) for the full contract.
 
 ### Nous Hermes Agent
 

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Discover, export, and safely resume local Codex, Claude Code, and Hermes sessions."""
+"""Discover, export, and resume local Codex, Claude Code, Hermes, and OpenClaw sessions."""
 
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 import dataclasses
 import datetime as dt
 import json
@@ -23,7 +24,7 @@ from typing import Any, Iterable
 # Every provider Braid can discover.  Adding one here plus a discover_/extract_
 # entry in DISCOVERY/EXTRACTORS is the whole registration surface; no argparse
 # choices tuple or dispatch ternary is duplicated anywhere else.
-PROVIDERS = ("codex", "claude", "hermes")
+PROVIDERS = ("codex", "claude", "hermes", "openclaw")
 PROVIDER_CHOICES = ("all", *PROVIDERS)
 
 
@@ -39,12 +40,20 @@ class Session:
     updated: float = 0.0
     archived: bool = False
     aliases: tuple[str, ...] = ()
-    # "file": the transcript is a readable path on disk.  "cli": the provider
-    # owns its store (Hermes keeps SQLite) and only its own CLI may export it.
+    # How the conversation is read.  "file": a readable transcript path.
+    # "cli": the provider owns its store and only its own CLI may export it
+    # (Hermes).  "openclaw": a read-only SQLite store Braid reads directly.
     export_mode: str = "file"
+    # Who authored the session, as the owning product recorded it.  Hermes
+    # encodes this in `surface`; OpenClaw records it separately as created_via.
+    origin: str = ""
+    # The exact store this session was discovered in.  Session keys are not
+    # unique across OpenClaw profiles and agents, so every later read binds to
+    # this file rather than searching again and possibly landing elsewhere.
+    store: str = ""
 
     def transcript_available(self) -> bool:
-        if self.export_mode == "cli":
+        if self.export_mode in ("cli", "openclaw"):
             return bool(self.session_id)
         return self.transcript is not None
 
@@ -247,6 +256,374 @@ def discover_hermes() -> list[Session]:
     return sessions
 
 
+# ---- OpenClaw ---------------------------------------------------------------
+#
+# OpenClaw keeps one SQLite database per agent.  Braid reads it read-only and
+# never asks the Gateway, so discovery and export work whether or not OpenClaw
+# is running.  The schema is published in the product's own source
+# (src/state/openclaw-agent-schema.sql) rather than in its user documentation,
+# so every read is defensive: a missing table, renamed column, or unexpected
+# shape degrades to "no sessions" instead of guessing.
+
+
+def openclaw_home() -> Path:
+    override = os.environ.get("OPENCLAW_HOME", "").strip()
+    if override:
+        return Path(override).expanduser()
+    return Path.home()
+
+
+def openclaw_state_dirs() -> list[Path]:
+    """Resolve OpenClaw state directories the way OpenClaw itself does.
+
+    `OPENCLAW_STATE_DIR` wins outright.  Otherwise `.openclaw` is preferred,
+    `.clawdbot` is the one surviving legacy name, and named profiles live in
+    sibling `.openclaw-<profile>` directories.  Unlike Hermes, the location is
+    not platform-dependent: Windows uses the user profile, not LOCALAPPDATA.
+    """
+    override = os.environ.get("OPENCLAW_STATE_DIR", "").strip()
+    if override:
+        return [Path(override).expanduser()]
+    home = openclaw_home()
+    # Exactly one default root, the way OpenClaw picks it.  Reading both would
+    # resurrect pre-migration sessions and let stale legacy keys collide with
+    # current ones.
+    default = home / ".openclaw"
+    legacy = home / ".clawdbot"
+    if not default.is_dir() and legacy.is_dir():
+        default = legacy
+    found: list[Path] = [default]
+    try:
+        profiles = sorted(
+            path
+            for path in home.glob(".openclaw-*")
+            if path.is_dir() and not path.name.endswith(".pre-migration")
+        )
+    except OSError:
+        profiles = []
+    found.extend(profiles)
+    return found
+
+
+def openclaw_databases() -> list[tuple[str, Path]]:
+    """Return (agent_id, database) for every discoverable agent store."""
+    stores: list[tuple[str, Path]] = []
+    for state_dir in openclaw_state_dirs():
+        agents = state_dir / "agents"
+        if not agents.is_dir():
+            continue
+        try:
+            entries = sorted(agents.iterdir())
+        except OSError:
+            continue
+        for agent in entries:
+            database = agent / "agent" / "openclaw-agent.sqlite"
+            # The incognito sentinel database is deliberately not durable
+            # context; it exists so a session can be kept out of history.
+            if database.is_file():
+                stores.append((agent.name, database))
+    return stores
+
+
+_OPENCLAW_SESSION_SQL = """
+    SELECT n.session_key       AS session_key,
+           n.current_session_id AS session_id,
+           n.entry_json        AS entry_json,
+           n.label             AS label,
+           n.display_name      AS display_name,
+           n.archived_at       AS archived_at,
+           n.created_via       AS created_via,
+           COALESCE(n.last_interaction_at, n.last_activity_at, n.updated_at)
+                               AS last_active,
+           w.model             AS model
+    FROM session_nodes AS n
+    LEFT JOIN session_windows AS w ON w.session_id = n.current_session_id
+    ORDER BY last_active DESC
+    LIMIT ?
+"""
+
+# The live branch only.  Compaction, rewind, and forks leave earlier events in
+# transcript_events; replaying those would hand the ledger context the session
+# has already moved past.
+_OPENCLAW_ACTIVE_SQL = """
+    SELECT e.event_json
+    FROM session_transcript_active_events AS a
+    JOIN transcript_events AS e
+      ON e.session_id = a.session_id AND e.seq = a.event_seq
+    WHERE a.session_id = ?
+    ORDER BY a.active_position ASC
+"""
+
+
+MAX_OPENCLAW_SESSIONS = 500
+
+# OpenClaw records how each session was started.  Only these are the local
+# operator's own: `channel` is a messaging platform, `cron` is a schedule, and
+# `spawn`/`plugin`/`internal` are agent- or system-authored.  A session whose
+# origin is unrecorded is treated as unproven rather than assumed local.
+OPENCLAW_LOCAL_ORIGINS = frozenset({"operator", "talk"})
+
+
+def _openclaw_time(value: Any) -> float:
+    """Normalize an OpenClaw timestamp to unix seconds.
+
+    OpenClaw stores `Date.now()` milliseconds; Braid works in seconds.  The
+    magnitude test keeps a store that ever wrote seconds from being read as
+    dates in the distant future.
+    """
+    try:
+        number = float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    return number / 1000.0 if number > 100_000_000_000 else number
+
+
+def _open_readonly(database: Path) -> sqlite3.Connection | None:
+    try:
+        connection = sqlite3.connect(
+            f"{database.as_uri()}?mode=ro", uri=True, timeout=2.0
+        )
+    except (sqlite3.Error, ValueError, OSError):
+        return None
+    connection.row_factory = sqlite3.Row
+    return connection
+
+
+def openclaw_schema_version(database: Path) -> int | None:
+    connection = _open_readonly(database)
+    if connection is None:
+        return None
+    try:
+        row = connection.execute(
+            "SELECT MAX(schema_version) AS version FROM schema_meta"
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        connection.close()
+    try:
+        return int(row["version"]) if row and row["version"] is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def discover_openclaw() -> list[Session]:
+    sessions: list[Session] = []
+    for agent_id, database in openclaw_databases():
+        connection = _open_readonly(database)
+        if connection is None:
+            continue
+        try:
+            rows = connection.execute(
+                _OPENCLAW_SESSION_SQL, (MAX_OPENCLAW_SESSIONS,)
+            ).fetchall()
+        except sqlite3.Error:
+            # A schema Braid does not recognize is not an error for the other
+            # providers; it just means this store contributes nothing.
+            continue
+        finally:
+            connection.close()
+        for row in rows:
+            session_key = str(row["session_key"] or "")
+            if not session_key:
+                continue
+            title = str(row["display_name"] or row["label"] or "")
+            cwd = _openclaw_workspace(_openclaw_entry(row["entry_json"]))
+            sessions.append(
+                Session(
+                    provider="openclaw",
+                    surface=f"openclaw-{agent_id}",
+                    session_id=session_key,
+                    resume_id=session_key,
+                    transcript=None,
+                    title=title,
+                    cwd=cwd,
+                    updated=_openclaw_time(row["last_active"]),
+                    archived=bool(row["archived_at"]),
+                    aliases=tuple(
+                        value
+                        for value in (title, str(row["session_id"] or ""), agent_id)
+                        if value
+                    ),
+                    export_mode="openclaw",
+                    origin=str(row["created_via"] or ""),
+                    store=str(database),
+                )
+            )
+    return sessions
+
+
+def _openclaw_entry(value: Any) -> dict[str, Any]:
+    """`entry_json` is OpenClaw's canonical session record; columns are indexes."""
+    if not isinstance(value, str) or not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except (json.JSONDecodeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _openclaw_workspace(entry: dict[str, Any]) -> str:
+    """Best working-directory guess from a session's canonical record.
+
+    OpenClaw has no cwd column; the authoritative value lives in the transcript
+    header event, which discovery does not open (one extra query per session).
+    These entry fields are the cheap approximation, in decreasing specificity.
+    """
+    worktree = entry.get("worktree")
+    report = entry.get("systemPromptReport")
+    candidates = (
+        entry.get("execCwd"),
+        entry.get("spawnedCwd"),
+        worktree.get("repoRoot") if isinstance(worktree, dict) else None,
+        entry.get("spawnedWorkspaceDir"),
+        report.get("workspaceDir") if isinstance(report, dict) else None,
+    )
+    for value in candidates:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def openclaw_snapshot(session: Session) -> tuple[str, list[Message]]:
+    """Read one OpenClaw session's origin and live conversation atomically.
+
+    Everything comes from the store the session was discovered in and from a
+    single read transaction.  Both matter:
+
+    * Session keys are not unique across profiles and agents, so re-searching
+      by key could bind the trust decision to one database and the transcript
+      to another.
+    * The generation id rotates on reset, fork, and compaction, so resolving it
+      in one connection and reading the transcript in another could quote a
+      branch the session has already abandoned.
+
+    Returns `(created_via, messages)` so a caller gating on authorship judges
+    the same snapshot it is about to read.
+    """
+    if not session.store:
+        raise SystemExit(
+            "This OpenClaw session was not bound to a store. Run list again "
+            "to get a current session record."
+        )
+    database = Path(session.store)
+    connection = _open_readonly(database)
+    if connection is None:
+        raise SystemExit(
+            f"The OpenClaw session store could not be opened read-only: {database}"
+        )
+    try:
+        # One deferred transaction keeps the generation lookup and the
+        # transcript read on a single consistent view of the database.
+        connection.execute("BEGIN DEFERRED")
+        try:
+            node = connection.execute(
+                "SELECT current_session_id, created_via FROM session_nodes"
+                " WHERE session_key = ?",
+                (session.session_id,),
+            ).fetchone()
+        except sqlite3.Error as error:
+            raise SystemExit(
+                f"The OpenClaw session store could not be read: {error}"
+            ) from None
+        if node is None or not node["current_session_id"]:
+            raise SystemExit(
+                "This OpenClaw session is no longer in its local store. "
+                "Run list again for the current session key."
+            )
+        generation = str(node["current_session_id"])
+        try:
+            rows = connection.execute(_OPENCLAW_ACTIVE_SQL, (generation,)).fetchall()
+        except sqlite3.Error as error:
+            # The active-branch projection is how Braid knows which events are
+            # still live.  Without it there is no safe reading: replaying the
+            # raw log would resurrect content the session has moved past.
+            raise SystemExit(
+                "This OpenClaw store does not expose the active-branch "
+                f"projection Braid needs to read it safely ({error})."
+            ) from None
+        origin = str(node["created_via"] or "")
+    finally:
+        connection.close()
+    # An empty projection means an empty live branch, not "read everything".
+    return origin, openclaw_events_to_messages(row["event_json"] for row in rows)
+
+
+def extract_openclaw(session: Session) -> list[Message]:
+    """Read one OpenClaw session's live conversation, read-only."""
+    return openclaw_snapshot(session)[1]
+
+
+def _openclaw_message_text(payload: Mapping[str, Any]) -> str:
+    """Mirror OpenClaw's own transcript text extraction.
+
+    Content is usually a block array but may be a bare string, and some
+    messages carry a top-level `text` instead.  Only text-bearing blocks count:
+    thinking, tool calls, and images are not conversation.
+    """
+    content = payload.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = [
+            block["text"].strip()
+            for block in content
+            if isinstance(block, Mapping)
+            and block.get("type") in ("text", "input_text", "output_text")
+            and isinstance(block.get("text"), str)
+            and block["text"].strip()
+        ]
+        if parts:
+            return "\n".join(parts)
+    fallback = payload.get("text")
+    return fallback.strip() if isinstance(fallback, str) else ""
+
+
+def _openclaw_timestamp(value: Any) -> str:
+    """Event timestamps are ISO strings, but readers tolerate epoch ms."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return iso_time(_openclaw_time(value))
+    return ""
+
+
+def openclaw_events_to_messages(events: Iterable[Any]) -> list[Message]:
+    """Normalize OpenClaw transcript events into plain messages.
+
+    Only `user` and `assistant` carry conversation. Note the tool role is
+    spelled `toolResult`, and the seq-0 header is a `session` event, so both
+    fall out of the type/role filter rather than needing special cases.
+    """
+    messages: list[Message] = []
+    for raw in events:
+        if not isinstance(raw, str):
+            continue
+        try:
+            event = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(event, dict) or event.get("type") != "message":
+            continue
+        payload = event.get("message")
+        if not isinstance(payload, Mapping):
+            continue
+        role = str(payload.get("role", ""))
+        if role not in ("user", "assistant"):
+            continue
+        text = _openclaw_message_text(payload)
+        if text:
+            messages.append(
+                Message(
+                    role=role,
+                    text=text,
+                    timestamp=_openclaw_timestamp(event.get("timestamp")),
+                )
+            )
+    return dedupe_messages(messages)
+
+
 def first_codex_meta(path: Path) -> dict[str, Any]:
     for index, record in enumerate(read_jsonl(path)):
         if record.get("type") == "session_meta" and isinstance(
@@ -411,6 +788,7 @@ DISCOVERY = {
     "codex": discover_codex,
     "claude": discover_claude,
     "hermes": discover_hermes,
+    "openclaw": discover_openclaw,
 }
 
 
@@ -449,9 +827,13 @@ def resolve_session(identifier: str, provider: str = "all") -> Session:
         )
     ]
     candidates = exact or [item for item in sessions if matches(item, identifier)]
-    # De-duplicate records by provider and resume id.
-    unique: dict[tuple[str, str], Session] = {
-        (item.provider, item.resume_id or item.session_id): item for item in candidates
+    # De-duplicate records by provider and resume id, and by store where the
+    # provider does not guarantee a globally unique id.  OpenClaw session keys
+    # repeat across profiles and agents, so collapsing them would silently pick
+    # one store instead of reporting the ambiguity.
+    unique: dict[tuple[str, str, str], Session] = {
+        (item.provider, item.resume_id or item.session_id, item.store): item
+        for item in candidates
     }
     candidates = list(unique.values())
     if not candidates:
@@ -460,7 +842,10 @@ def resolve_session(identifier: str, provider: str = "all") -> Session:
         )
     if len(candidates) > 1:
         details = "\n".join(
-            f"- {item.provider}: {item.session_id} | {item.title or '(untitled)'} | {item.cwd}"
+            f"- {item.provider}: {item.session_id} | {item.title or '(untitled)'}"
+            f" | {item.cwd}" + (f" | {item.store}" if item.store else "")
+            # Two profiles can hold the same session key, so the store is the
+            # only thing that tells the candidates apart.
             for item in candidates[:12]
         )
         raise SystemExit(
@@ -762,6 +1147,8 @@ def extract_session_messages(session: Session) -> list[Message]:
     """Read one discovered session's conversation, whatever product owns it."""
     if session.provider == "hermes":
         return extract_hermes(session)
+    if session.provider == "openclaw":
+        return extract_openclaw(session)
     if session.transcript is None or not session.transcript.exists():
         raise SystemExit(
             "This session has no local transcript. Continue/import it to a local surface first."
@@ -858,6 +1245,116 @@ def peer_prompt(prompt: str, request_id: str) -> str:
     )
 
 
+OPENCLAW_PEER_TIMEOUT = 300
+
+
+def run_openclaw_peer(
+    session: Session, prompt: str, ephemeral: bool, dry_run: bool
+) -> str:
+    """Run one turn in an existing OpenClaw session through its Gateway.
+
+    `openclaw agent` reserves stdout for the reply and keeps delivery opt-in,
+    so omitting `--deliver` answers the driver without broadcasting anything to
+    the session's channels.
+    """
+    if ephemeral:
+        # `--session-key` always records the turn; there is no non-persistent
+        # resume.  Dropping a privacy-affecting flag silently would be worse
+        # than refusing.
+        raise SystemExit(
+            "OpenClaw has no ephemeral turn: resuming a session always records "
+            "it. Re-run without --ephemeral to proceed."
+        )
+    executable = shutil.which("openclaw")
+    if not executable:
+        raise SystemExit(
+            "The openclaw CLI was not found on PATH. Run doctor for details."
+        )
+    session_key = safe_cli_identifier(session.resume_id, "session key")
+    bridged = peer_prompt(prompt, str(uuid.uuid4()))
+    command = [
+        executable,
+        "agent",
+        "--session-key",
+        session_key,
+        "--message",
+        bridged,
+        "--json",
+        "--timeout",
+        str(OPENCLAW_PEER_TIMEOUT),
+    ]
+    if dry_run:
+        return (
+            json.dumps(
+                {
+                    "provider": session.provider,
+                    "surface": session.surface,
+                    "resume_id": session.resume_id,
+                    "executable": executable,
+                    "ephemeral": ephemeral,
+                    "delivers_to_channels": False,
+                    "prompt_characters": len(bridged),
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+    try:
+        completed = subprocess.run(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            # The peer's own deadline plus room for it to report cleanly.
+            timeout=OPENCLAW_PEER_TIMEOUT + 60,
+        )
+    except subprocess.TimeoutExpired:
+        raise SystemExit(
+            "The OpenClaw turn timed out. The Gateway may still be running it; "
+            "check the session before asking again rather than retrying blindly."
+        ) from None
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip() or "unknown error"
+        raise SystemExit(
+            f"OpenClaw turn failed (exit {completed.returncode}):\n{detail}"
+        )
+    return openclaw_reply_text(completed.stdout)
+
+
+def openclaw_reply_text(stdout: str) -> str:
+    """Pull the reply out of `openclaw agent --json`.
+
+    An in-flight status is reported rather than retried: the Gateway is already
+    running a turn for this session, and a second one would duplicate work.
+    """
+    try:
+        value = json.loads(stdout)
+    except (json.JSONDecodeError, ValueError):
+        return stdout.rstrip() + "\n"
+    if not isinstance(value, dict):
+        return stdout.rstrip() + "\n"
+    status = str((value.get("meta") or {}).get("status") or value.get("status") or "")
+    if status == "in_flight":
+        raise SystemExit(
+            "OpenClaw already has an active run for this session. Wait for it "
+            "to finish rather than starting a second turn."
+        )
+    payloads = value.get("payloads")
+    if isinstance(payloads, list):
+        parts = [
+            str(item.get("text", "")).strip()
+            for item in payloads
+            if isinstance(item, dict) and str(item.get("text", "")).strip()
+        ]
+        if parts:
+            return "\n\n".join(parts).rstrip() + "\n"
+    return stdout.rstrip() + "\n"
+
+
 def run_peer(session: Session, prompt: str, ephemeral: bool, dry_run: bool) -> str:
     if session.provider == "hermes":
         # Hermes' one-shot mode documents that "approvals are auto-bypassed",
@@ -873,6 +1370,8 @@ def run_peer(session: Session, prompt: str, ephemeral: bool, dry_run: bool) -> s
             "side effects with no gate. Use `session export` or `handoff` for "
             "this session, which read it without executing anything."
         )
+    if session.provider == "openclaw":
+        return run_openclaw_peer(session, prompt, ephemeral, dry_run)
     executable = shutil.which("codex" if session.provider == "codex" else "claude")
     if not executable:
         raise SystemExit(
@@ -1060,6 +1559,22 @@ def command_doctor(_: argparse.Namespace) -> None:
         "hermes_home": str(hermes_home()),
         "hermes_state_db_exists": hermes_state_db().exists(),
         "hermes_sessions_readable": len(discover_hermes()),
+        "openclaw_cli": shutil.which("openclaw"),
+        "openclaw_state_dirs": [str(path) for path in openclaw_state_dirs()],
+        "openclaw_stores": [
+            {
+                "agent_id": agent_id,
+                "database": str(database),
+                "schema_version": openclaw_schema_version(database),
+            }
+            for agent_id, database in openclaw_databases()
+        ],
+        "openclaw_sessions_readable": len(discover_openclaw()),
+        "openclaw_unreadable_stores": [
+            str(database)
+            for _agent_id, database in openclaw_databases()
+            if _open_readonly(database) is None
+        ],
     }
     print(json.dumps(report, indent=2))
 

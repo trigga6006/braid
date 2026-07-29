@@ -280,3 +280,94 @@ class ContextMcpTests(unittest.TestCase):
                     context_mcp.call_ledger_operation(
                         FakeLedger(), operation, arguments
                     )
+
+    def test_extract_turns_markdown_into_reviewable_claims(self) -> None:
+        # Without this an MCP-only client would have to hand-build Context Pack
+        # claims, which the stage schema alone does not describe.
+        adapter = context_mcp.ContextLedgerMcpAdapter(FakeLedger())
+        result = adapter.dispatch(
+            "extract",
+            {
+                "markdown": (
+                    "# Notes\n\n"
+                    "- Decision: use short-lived tokens.\n"
+                    "- Blocker: refresh endpoint fails under load.\n"
+                )
+            },
+        )
+        self.assertEqual(result["count"], 2)
+        self.assertTrue(result["requires_review"])
+        self.assertEqual(
+            sorted(claim["kind"] for claim in result["claims"]),
+            ["blocker", "decision"],
+        )
+
+    def test_extract_accepts_messages_and_never_stages_them(self) -> None:
+        ledger = FakeLedger()
+        adapter = context_mcp.ContextLedgerMcpAdapter(ledger)
+        result = adapter.dispatch(
+            "extract",
+            {
+                "messages": [
+                    {"role": "user", "text": "Decision: adopt the blue/green deploy."},
+                    {"role": "assistant", "text": "Blocker: the canary is flaky."},
+                ]
+            },
+        )
+        self.assertGreater(result["count"], 0)
+        # Extraction is not ingestion: the ledger was never touched.
+        self.assertEqual(ledger.calls, [])
+
+    def test_extract_requires_exactly_one_source(self) -> None:
+        adapter = context_mcp.ContextLedgerMcpAdapter(FakeLedger())
+        for arguments in (
+            {},
+            {"markdown": "x", "messages": [{"role": "user", "text": "y"}]},
+        ):
+            with self.subTest(arguments=sorted(arguments)):
+                with self.assertRaisesRegex(
+                    context_mcp.McpProtocolError, "exactly one source"
+                ):
+                    adapter.dispatch("extract", arguments)
+
+    def test_extract_rejects_malformed_and_oversized_input(self) -> None:
+        adapter = context_mcp.ContextLedgerMcpAdapter(FakeLedger())
+        cases = (
+            ({"messages": [{"role": "system", "text": "x"}]}, "role"),
+            ({"messages": ["not-an-object"]}, "must be an object"),
+            ({"markdown": "x" * (context_mcp.MAX_EXTRACT_CHARS + 1)}, "exceeds"),
+            (
+                {
+                    "messages": [
+                        {"role": "user", "text": "x" * context_mcp.MAX_EXTRACT_CHARS},
+                        {"role": "user", "text": "y" * 100},
+                    ]
+                },
+                "exceed",
+            ),
+        )
+        for arguments, fragment in cases:
+            with self.subTest(fragment=fragment):
+                with self.assertRaisesRegex(context_mcp.McpProtocolError, fragment):
+                    adapter.dispatch("extract", arguments)
+
+    def test_extract_is_advertised_with_a_usable_schema(self) -> None:
+        # A client must be able to learn how to call it from tools/list alone.
+        self.assertIn("extract", context_mcp.OPERATIONS)
+        schema = context_mcp.TOOL_SCHEMAS["extract"]
+        self.assertEqual(schema["additionalProperties"], False)
+        message = schema["properties"]["messages"]["items"]
+        self.assertEqual(message["properties"]["role"]["enum"], ["user", "assistant"])
+        self.assertEqual(sorted(message["required"]), ["role", "text"])
+
+    def test_extract_source_choice_uses_presence_not_truthiness(self) -> None:
+        # An empty markdown string alongside a real message array is two
+        # sources, not one; truthiness would silently extract nothing.
+        adapter = context_mcp.ContextLedgerMcpAdapter(FakeLedger())
+        with self.assertRaisesRegex(context_mcp.McpProtocolError, "exactly one source"):
+            adapter.dispatch(
+                "extract",
+                {"markdown": "", "messages": [{"role": "user", "text": "Decision: X"}]},
+            )
+        # An explicitly empty single source is valid and yields nothing.
+        self.assertEqual(adapter.dispatch("extract", {"markdown": ""})["count"], 0)

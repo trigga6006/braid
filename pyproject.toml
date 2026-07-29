@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "braid"
 version = "0.5.0"
-description = "Governed context synchronization for existing Claude Code, Codex, and Hermes sessions"
+description = "Governed context synchronization for existing Claude Code, Codex, Hermes, and OpenClaw sessions"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"

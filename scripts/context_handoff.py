@@ -128,6 +128,7 @@ def _local_session_roots() -> list[Path]:
         braid_session.claude_home(),
         *braid_session.claude_desktop_roots(),
         braid_session.hermes_home(),
+        *braid_session.openclaw_state_dirs(),
     ]
 
 
@@ -165,9 +166,16 @@ def _discard_stage(ledger: ContextLedger, stage_id: str) -> None:
         )
 
 
-def assert_source_is_local(session: Any) -> None:
-    """Prove the source session is this user's own local session on this host."""
+def assert_source_is_local(session: Any) -> list[Any] | None:
+    """Prove the source session is this user's own local session on this host.
+
+    Returns the conversation when proving locality already had to read it, so
+    the caller commits exactly the content that was authorized rather than
+    re-reading a store that may have rotated in between.
+    """
     transcript = getattr(session, "transcript", None)
+    if transcript is None and getattr(session, "export_mode", "file") == "openclaw":
+        return _assert_openclaw_source_is_local(session)
     if transcript is None and getattr(session, "export_mode", "file") == "cli":
         # Hermes keeps its conversations in a SQLite store rather than one file
         # per session, so the locality proof is anchored on that store instead.
@@ -195,6 +203,47 @@ def assert_source_is_local(session: Any) -> None:
             f"The source transcript {shown} is outside this user's own "
             "session stores, so it may belong to a different principal."
         )
+
+
+def _assert_openclaw_source_is_local(session: Any) -> list[Any]:
+    """Prove an OpenClaw session is this user's own, on this host.
+
+    OpenClaw records how each session began, and only some of those origins are
+    the local operator. A Telegram, Discord, cron, or agent-spawned session
+    lives in the same local database as a hand-typed one, so the store's
+    location says nothing about who wrote the turns.
+    """
+    # Read the origin back out of the store this session is bound to, rather
+    # than trusting the value carried from discovery. Session keys are not
+    # unique across OpenClaw profiles and agents, so a record found elsewhere
+    # must never be able to vouch for the transcript this handoff will read.
+    try:
+        origin, messages = braid_session.openclaw_snapshot(session)
+    except SystemExit as error:
+        _refuse(f"This OpenClaw session could not be read for review: {error}")
+    if origin not in braid_session.OPENCLAW_LOCAL_ORIGINS:
+        _refuse(
+            f"This OpenClaw session was started via "
+            f"'{terminal_safe(origin or 'unrecorded', 40)}', so its turns were "
+            "not necessarily authored by you at this machine. A local database "
+            "cannot prove same-principal authorship. Use the governed path "
+            "(extract, review, disclose) instead of the zero-ceremony handoff."
+        )
+    store = Path(str(getattr(session, "store", "") or ""))
+    shown = terminal_safe(store, 200)
+    if not _is_local_path(store):
+        _refuse(f"The OpenClaw session store {shown} is not on local storage.")
+    if not store.is_file():
+        _refuse(f"The OpenClaw session store {shown} is not a readable file.")
+    roots = [
+        root for root in braid_session.openclaw_state_dirs() if _is_local_path(root)
+    ]
+    if not any(_within(store, root) for root in roots):
+        _refuse(
+            f"The OpenClaw session store {shown} is outside this user's own "
+            "OpenClaw state directories, so it may belong to a different principal."
+        )
+    return messages
 
 
 def _assert_cli_source_is_local(session: Any) -> None:
@@ -394,11 +443,18 @@ def run_handoff(
         raise ValueError("--max-chars must be a positive number of characters.")
 
     session = braid_session.resolve_session(source, provider)
-    assert_source_is_local(session)
+    authorized = assert_source_is_local(session)
     ledger = _open_local_ledger(project, home)
     status = assert_destination_is_same_principal(ledger, destination_principal)
 
-    messages = braid_session.extract_session_messages(session)
+    # Reuse what the locality proof already read, so the committed transcript
+    # is the one that was authorized rather than a fresh read of a store that
+    # may have rotated its generation in between.
+    messages = (
+        authorized
+        if authorized is not None
+        else braid_session.extract_session_messages(session)
+    )
     chosen, omitted = braid_session.limited_messages(messages, budget)
     try:
         extraction = extract_messages(chosen)

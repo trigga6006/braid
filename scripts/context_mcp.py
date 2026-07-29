@@ -18,6 +18,7 @@ from context_security import SecurityError, strict_json_loads
 SERVER_NAME, SERVER_VERSION, PROTOCOL_VERSION = "braid-context", "0.5.0", "2025-06-18"
 MAX_REQUEST_CHARS = 1_000_000
 OPERATIONS = (
+    "extract",
     "stage",
     "review_staged",
     "approve_staged",
@@ -47,13 +48,90 @@ class McpProtocolError(ValueError):
     pass
 
 
+MAX_EXTRACT_CHARS = 200_000
+MAX_EXTRACT_MESSAGES = 2_000
+
+
+class _Message:
+    """Duck-typed message for ``context_extract``: role, text, timestamp."""
+
+    __slots__ = ("role", "text", "timestamp")
+
+    def __init__(self, role: str, text: str, timestamp: str) -> None:
+        self.role, self.text, self.timestamp = role, text, timestamp
+
+
 class ContextLedgerMcpAdapter:
     """Operation adapter for ``ContextLedger``; it never stores context itself."""
 
     def __init__(self, ledger: Any) -> None:
         self.ledger = ledger
 
+    def extract(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Turn an agent's own notes into reviewable claims without staging them.
+
+        Without this, the only way in is ``stage`` with hand-built Context Pack
+        claims, which an agent cannot construct from the tool schema alone.
+        Extraction is the same code the CLI uses, so a client that speaks only
+        MCP can reach the ledger on equal terms.  Nothing is committed here:
+        the result still has to go through stage, review, and approve.
+        """
+        # Imported lazily so the server keeps starting when only the ledger
+        # operations are wanted; extraction pulls in the scanners.
+        from context_extract import extract_markdown_claims, extract_message_claims
+
+        # Presence, not truthiness: passing an empty string alongside a real
+        # message array would otherwise look like a single source and silently
+        # extract nothing.
+        has_markdown = "markdown" in arguments
+        has_messages = "messages" in arguments
+        markdown = arguments.get("markdown")
+        messages = arguments.get("messages")
+        if has_markdown == has_messages:
+            raise McpProtocolError("Choose exactly one source: markdown or messages.")
+        if has_markdown:
+            if not isinstance(markdown, str):
+                raise McpProtocolError("markdown must be a string.")
+            if len(markdown) > MAX_EXTRACT_CHARS:
+                raise McpProtocolError(
+                    f"markdown exceeds {MAX_EXTRACT_CHARS} characters."
+                )
+            claims = extract_markdown_claims(markdown)
+        else:
+            if not isinstance(messages, list):
+                raise McpProtocolError("messages must be an array.")
+            if len(messages) > MAX_EXTRACT_MESSAGES:
+                raise McpProtocolError(
+                    f"messages exceeds {MAX_EXTRACT_MESSAGES} entries."
+                )
+            budget = 0
+            converted: list[_Message] = []
+            for entry in messages:
+                if not isinstance(entry, Mapping):
+                    raise McpProtocolError("each message must be an object.")
+                role = entry.get("role")
+                text = entry.get("text")
+                if role not in ("user", "assistant") or not isinstance(text, str):
+                    raise McpProtocolError(
+                        "each message needs role 'user' or 'assistant' and string text."
+                    )
+                budget += len(text)
+                if budget > MAX_EXTRACT_CHARS:
+                    raise McpProtocolError(
+                        f"messages exceed {MAX_EXTRACT_CHARS} characters in total."
+                    )
+                converted.append(_Message(role, text, str(entry.get("timestamp", ""))))
+            claims = extract_message_claims(converted)
+        return {
+            "claims": claims,
+            "count": len(claims),
+            "requires_review": True,
+            "next": "Call braid_stage with these claims, then review and approve.",
+        }
+
     def dispatch(self, operation: str, arguments: dict[str, Any]) -> Any:
+        if operation == "extract":
+            return self.extract(arguments)
         if operation == "stage":
             return self.ledger.stage(
                 arguments["claims"],
@@ -150,6 +228,28 @@ def _schema(
 _STRING = {"type": "string"}
 _STRINGS = {"type": "array", "items": _STRING}
 TOOL_SCHEMAS = {
+    "extract": _schema(
+        {
+            "markdown": _STRING,
+            "messages": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "role": {"type": "string", "enum": ["user", "assistant"]},
+                        "text": _STRING,
+                        "timestamp": _STRING,
+                    },
+                    "required": ["role", "text"],
+                },
+            },
+        },
+        (),
+    )
+    # Advertise the exactly-one-source rule so a client can discover it from
+    # tools/list rather than by trying and failing.
+    | {"oneOf": [{"required": ["markdown"]}, {"required": ["messages"]}]},
     "stage": _schema(
         {
             "claims": {"type": "array", "items": {"type": "object"}},

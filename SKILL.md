@@ -1,6 +1,6 @@
 ---
 name: braid
-description: Braid synchronizes governed, provenance-linked context between existing Claude Code, Codex, and Nous Hermes Agent sessions locally, through temporary public rooms, or asynchronously through a self-hosted Team Hub. Use for team catch-ups, coding/research handoffs, on-call incident handoffs, scheduled project checkpoints, semantic context diffs, recipient-minimized signed Context Packs, conflict reconciliation, synchronized summaries, or secure agent collaboration.
+description: Braid synchronizes governed, provenance-linked context between existing Claude Code, Codex, Nous Hermes Agent, and OpenClaw sessions locally, through temporary public rooms, or asynchronously through a self-hosted Team Hub. Use for team catch-ups, coding/research handoffs, on-call incident handoffs, scheduled project checkpoints, semantic context diffs, recipient-minimized signed Context Packs, conflict reconciliation, synchronized summaries, or secure agent collaboration.
 version: 0.5.0
 license: Apache-2.0
 platforms: [linux, macos, windows]
@@ -411,6 +411,18 @@ overrun, or the hourly rate limit. Referred requests stay `open` for a person.
 Report `needs_human` and the exact blockers back to the user rather than
 retrying or widening the policy to make a refusal go away. Treat a blocker as
 the signal it is: the policy is doing its job.
+
+## Work with OpenClaw
+
+OpenClaw sessions are discovered, exported, handed off, and asked like any other — `--provider openclaw` narrows any of those commands. Three differences matter when reporting results:
+
+- **Braid reads OpenClaw's store directly, read-only.** OpenClaw's own CLI redacts message text, so Braid reads the per-agent SQLite database instead. It never writes to or migrates it, though a WAL reader does take shared read locks and SQLite may touch `-shm`/`-wal` sidecars. It works whether or not the OpenClaw Gateway is running. A schema it does not recognize yields no sessions rather than a guess; `session doctor` shows each store's `schema_version`.
+- **Identify sessions by session key, not generation.** `agent:<agent>:<key>` is the durable identity Braid lists and resumes. Braid reads only the live branch, so context abandoned by a compaction or rewind is not replayed.
+- **The zero-ceremony handoff is operator-only.** OpenClaw records how each session began. Only `operator` and `talk` are the local human; `channel`, `cron`, `spawn`, `plugin`, and `internal` sessions carry turns authored elsewhere and are refused with a pointer to the governed path. Export still works for all of them.
+
+A live turn uses `openclaw agent --session-key … --json` and never passes `--deliver`, so the peer answers this session without broadcasting to its Telegram, Discord, or Slack channels. If OpenClaw reports `in_flight`, report that and wait — do not ask again, because the Gateway is already running that turn.
+
+`OPENCLAW_STATE_DIR` overrides the store location, `OPENCLAW_HOME` the base directory, and named profiles live in `~/.openclaw-<profile>`.
 
 ## Work with Nous Hermes Agent
 
